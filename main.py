@@ -20,7 +20,6 @@ def download_attachment(attachment, creds):
     if not download_uri:
         return None, None
         
-    # משתמשים בטוקן שלנו כדי לקבל הרשאת הורדה לגוגל
     headers = {'Authorization': f'Bearer {creds.token}'}
     response = requests.get(download_uri, headers=headers)
     
@@ -30,57 +29,79 @@ def download_attachment(attachment, creds):
         print(f"שגיאה בהורדת הקובץ: {response.status_code}")
         return None, None
 
-def copy_message(service, source_space, target_space, message_id):
-    """מעתיק את ההודעה ואת הקובץ המצורף"""
+def get_latest_message(service, space_name):
+    """מושך את ההודעה האחרונה ביותר ממרחב המקור"""
     try:
-        # 1. קריאת ההודעה המקורית
-        message_name = f"{source_space}/messages/{message_id}"
-        original_msg = service.spaces().messages().get(name=message_name).execute()
+        # בקשת רשימת ההודעות האחרונות מהמרחב
+        results = service.spaces().messages().list(
+            parent=space_name, 
+            pageSize=50
+        ).execute()
         
+        messages = results.get('messages', [])
+        if not messages:
+            print("לא נמצאו הודעות במרחב המקור.")
+            return None
+            
+        # הרשימה חוזרת בסדר כרונולוגי, לכן ניקח את ההודעה האחרונה במערך
+        latest_message = messages[-1]
+        print(f"נמצאה הודעה להעתקה. מזהה: {latest_message.get('name')}")
+        return latest_message
+        
+    except Exception as e:
+        print(f"שגיאה במשיכת היסטוריית ההודעות: {e}")
+        return None
+
+def copy_message(service, source_space, target_space):
+    """מאתר את ההודעה האחרונה ומעתיק אותה כולל קבצים"""
+    original_msg = get_latest_message(service, source_space)
+    
+    if not original_msg:
+        print("פעולת ההעתקה בוטלה מכיוון שלא נמצאה הודעה.")
+        return
+
+    try:
         new_msg_content = {'text': original_msg.get('text', '')}
         media_upload = None
         
-        # 2. בדיקה אם יש קובץ מצורף והורדה שלו לזיכרון
+        # בדיקה אם יש קובץ מצורף והורדה שלו
         if 'attachment' in original_msg and len(original_msg['attachment']) > 0:
             attachment_info = original_msg['attachment'][0]
+            print("מוריד קובץ מצורף...")
             file_stream, mime_type = download_attachment(attachment_info, service.credentials)
             
             if file_stream:
-                # 3. הכנת הקובץ להעלאה ישירה למרחב החדש
                 media_upload = MediaIoBaseUpload(
                     file_stream, 
                     mimetype=mime_type, 
                     resumable=True
                 )
 
-        # 4. יצירת ההודעה במרחב היעד
+        # יצירת ההודעה במרחב היעד
         if media_upload:
             service.spaces().messages().create(
                 parent=target_space,
                 body=new_msg_content,
                 media_body=media_upload
             ).execute()
-            print("ההודעה והקובץ המצורף הועתקו בהצלחה!")
+            print("ההודעה והקובץ המצורף הועתקו בהצלחה למרחב היעד!")
         else:
             service.spaces().messages().create(
                 parent=target_space,
                 body=new_msg_content
             ).execute()
-            print("הודעת הטקסט הועתקה בהצלחה (ללא קבצים)!")
+            print("הודעת הטקסט הועתקה בהצלחה (ללא קבצים מצורפים)!")
             
     except Exception as e:
-        print(f"אירעה שגיאה: {e}")
+        print(f"אירעה שגיאה בעת יצירת ההודעה החדשה: {e}")
 
 if __name__ == '__main__':
-    # מזהי המרחבים שלך
+    # מזהי המרחבים שהגדרנו
     SOURCE_SPACE = 'spaces/AAQAGYJvZLw'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
-    
-    # חובה להזין כאן את מזהה ההודעה שברצונך להעתיק כעת
-    MESSAGE_TO_COPY_ID = 'הכנס_כאן_את_מזהה_ההודעה' 
     
     print("מתחבר לשירות...")
     chat_service = authenticate_google_chat()
     
-    print("מעתיק הודעה וקבצים...")
-    copy_message(chat_service, SOURCE_SPACE, TARGET_SPACE, MESSAGE_TO_COPY_ID)
+    print("מתחיל בתהליך איתור והעתקת ההודעה...")
+    copy_message(chat_service, SOURCE_SPACE, TARGET_SPACE)
