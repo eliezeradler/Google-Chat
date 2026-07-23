@@ -107,7 +107,7 @@ def copy_message(service, source_space, target_space):
         print(f"אירעה שגיאה בעת יצירת ההודעה החדשה: {e}")
 
 if __name__ == '__main__':
-    SOURCE_SPACE = 'spaces/AAQAGYJvZLw'
+    SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
     print("מתחבר לשירות...")
