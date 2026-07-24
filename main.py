@@ -103,20 +103,27 @@ def sync_new_messages(service, source_space, target_space):
             original_msg_id = original_msg.get('name', '')
             original_thread_id = original_msg.get('thread', {}).get('name', '')
             
-            # בדיקה: האם זו הודעה ראשית או תגובה?
+            # בדיקה: האם זו הודעה ראשית או תגובה? (השוואה מדויקת)
             is_parent_message = False
             if original_msg_id and original_thread_id:
-                # חיתוך המזהה וניקוי סיומות כדי להשוות נכון (מתעלם ממה שאחרי הנקודה)
-                msg_id_part = original_msg_id.split('/')[-1].split('.')[0]
-                thread_id_part = original_thread_id.split('/')[-1].split('.')[0]
-                
-                # אם המזהה הנקי של ההודעה זהה למזהה השרשור - זו ההודעה הראשית
+                msg_id_part = original_msg_id.split('/')[-1]
+                thread_id_part = original_thread_id.split('/')[-1]
                 is_parent_message = (msg_id_part == thread_id_part)
 
-            sender_name = original_msg.get('sender', {}).get('displayName', 'משתמש לא ידוע')
+            # שליפת שם השולח
+            sender_info = original_msg.get('sender', {})
+            sender_name = sender_info.get('displayName')
+            if not sender_name:
+                sender_name = sender_info.get('email', 'משתמש לא ידוע')
+
             original_text = original_msg.get('text', '')
-            new_text = f"*{sender_name}:*\n{original_text}"
+            attachments = original_msg.get('attachment', [])
             
+            # סינון הודעות ריקות לחלוטין (ללא טקסט וללא קבצים)
+            if not original_text and not attachments:
+                continue
+
+            new_text = f"*{sender_name}:*\n{original_text}" if original_text else f"*{sender_name}:*"
             msg_body = {'text': new_text}
             
             if not is_parent_message:
@@ -125,9 +132,8 @@ def sync_new_messages(service, source_space, target_space):
                     msg_body['thread'] = {'name': state['threads'][original_thread_id]}
                 else:
                     print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר. מדלג כדי לא להעלות לראשי.")
-                    continue # עובר להודעה הבאה בלולאה מבלי להעתיק!
+                    continue 
 
-            attachments = original_msg.get('attachment', [])
             created_message = None
 
             if not attachments:
