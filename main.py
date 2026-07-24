@@ -106,9 +106,11 @@ def sync_new_messages(service, source_space, target_space):
             # בדיקה: האם זו הודעה ראשית או תגובה?
             is_parent_message = False
             if original_msg_id and original_thread_id:
-                msg_id_part = original_msg_id.split('/')[-1]
-                thread_id_part = original_thread_id.split('/')[-1]
-                # אם מזהה ההודעה זהה למזהה השרשור - זו ההודעה הראשית
+                # חיתוך המזהה וניקוי סיומות כדי להשוות נכון (מתעלם ממה שאחרי הנקודה)
+                msg_id_part = original_msg_id.split('/')[-1].split('.')[0]
+                thread_id_part = original_thread_id.split('/')[-1].split('.')[0]
+                
+                # אם המזהה הנקי של ההודעה זהה למזהה השרשור - זו ההודעה הראשית
                 is_parent_message = (msg_id_part == thread_id_part)
 
             sender_name = original_msg.get('sender', {}).get('displayName', 'משתמש לא ידוע')
