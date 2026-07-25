@@ -187,4 +187,4 @@ if __name__ == '__main__':
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
     chat_service, creds = authenticate_google_chat()
-    sync_new_messages(chat_service, SOURCE_SPACE, TARGET_SPACE)
+    sync_new_messages(chat_service, creds, SOURCE_SPACE, TARGET_SPACE)
