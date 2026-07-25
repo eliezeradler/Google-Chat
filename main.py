@@ -65,7 +65,7 @@ def save_state(state):
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def sync_new_messages(service, source_space, target_space):
+def sync_new_messages(service, creds, source_space, target_space):
     messages = get_all_messages(service, source_space)
     if not messages:
         print("לא נמצאו הודעות במרחב המקור.")
@@ -146,7 +146,7 @@ def sync_new_messages(service, source_space, target_space):
                 ).execute()
             else:
                 for i, attachment_info in enumerate(attachments):
-                    file_stream, mime_type = download_attachment(attachment_info, service.credentials)
+                    file_stream, mime_type = download_attachment(attachment_info, creds)
                     
                     # הטקסט המלא נשלח רק בקובץ הראשון
                     current_body = msg_body.copy() if i == 0 else {'text': f"*(קובץ נוסף מ-{sender_name})*"}
@@ -186,5 +186,5 @@ if __name__ == '__main__':
     SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
-    chat_service = authenticate_google_chat()
+    chat_service, creds = authenticate_google_chat()
     sync_new_messages(chat_service, SOURCE_SPACE, TARGET_SPACE)
