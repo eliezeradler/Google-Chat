@@ -103,12 +103,14 @@ def sync_new_messages(service, source_space, target_space):
             original_msg_id = original_msg.get('name', '')
             original_thread_id = original_msg.get('thread', {}).get('name', '')
             
-            # בדיקה: האם זו הודעה ראשית או תגובה? (השוואה מדויקת)
+            # זיהוי חכם של הודעה ראשית - תומך גם בתבנית כפולה של ה-API
             is_parent_message = False
             if original_msg_id and original_thread_id:
                 msg_id_part = original_msg_id.split('/')[-1]
                 thread_id_part = original_thread_id.split('/')[-1]
-                is_parent_message = (msg_id_part == thread_id_part)
+                
+                # בדיקה: האם המזהה זהה לשרשור או בתבנית ThreadID.ThreadID
+                is_parent_message = (msg_id_part == thread_id_part) or (msg_id_part == f"{thread_id_part}.{thread_id_part}")
 
             # שליפת שם השולח
             sender_info = original_msg.get('sender', {})
@@ -179,7 +181,6 @@ def sync_new_messages(service, source_space, target_space):
     state["last_msg_id"] = new_messages[-1]['name']
     save_state(state)
     print("הסנכרון הסתיים בהצלחה וקובץ הזיכרון (JSON) עודכן.")
-
 if __name__ == '__main__':
     SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
