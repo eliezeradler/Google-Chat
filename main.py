@@ -23,17 +23,18 @@ def download_attachment(attachment, service, creds):
     download_uri = attachment_ref.get('downloadUri')
     resource_name = attachment_ref.get('resourceName')
     
-    # ניסיון ראשון: הורדה דרך קישור ישיר (אם קיים)
+    # ניסיון ראשון: הורדה דרך קישור ישיר 
     if download_uri:
         headers = {'Authorization': f'Bearer {creds.token}'}
         response = requests.get(download_uri, headers=headers)
         if response.status_code == 200:
             return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
             
-    # ניסיון שני: הורדת תמונה/קובץ רגיל דרך המזהה הפנימי של גוגל
-    elif resource_name:
+    # ניסיון שני: הורדת המדיה דרך ה-API הרשמי
+    if resource_name:
         try:
-            request = service.media().download(resourceName=resource_name)
+            # התיקון כאן: הוספנו את alt='media' לבקשה בדיוק כפי שגוגל דרשה
+            request = service.media().download(resourceName=resource_name, alt='media')
             file_stream = io.BytesIO()
             downloader = MediaIoBaseDownload(file_stream, request)
             done = False
