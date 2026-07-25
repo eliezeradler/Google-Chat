@@ -217,7 +217,7 @@ def sync_new_messages(service, creds, source_space, target_space):
     print("הסנכרון הסתיים וקובץ הזיכרון (JSON) עודכן.")
 
 if __name__ == '__main__':
-    SOURCE_SPACE = 'spaces/AAQArWIpnWI'
+    SOURCE_SPACE = 'spaces/AAQASiObNm8'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
     chat_service, creds = authenticate_google_chat()
