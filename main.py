@@ -23,31 +23,31 @@ def download_attachment(attachment, service, creds):
     download_uri = attachment_ref.get('downloadUri')
     resource_name = attachment_ref.get('resourceName')
     
-    # ניסיון ראשון: הורדה דרך קישור ישיר 
-    if download_uri:
-        headers = {'Authorization': f'Bearer {creds.token}'}
+    headers = {'Authorization': f'Bearer {creds.token}'}
+    
+    # מעקף: הורדה ישירה דרך ה-API (Media endpoint) ללא תלות בספריית פייתון
+    if resource_name:
+        # אנחנו מרכיבים את כתובת ה-API להורדת מדיה, וקובעים בכוח את alt=media
+        media_url = f"https://chat.googleapis.com/v1/media/{resource_name}?alt=media"
+        try:
+            response = requests.get(media_url, headers=headers)
+            if response.status_code == 200:
+                print(f" > מדיה ירדה בהצלחה דרך API ישיר ({resource_name})")
+                return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
+            else:
+                print(f" > שגיאה בהורדת מדיה דרך API. סטטוס: {response.status_code}")
+        except Exception as e:
+            print(f" > שגיאת תקשורת בהורדה דרך API ישיר: {e}")
+
+    # גיבוי: הורדה דרך קישור ישיר 
+    elif download_uri:
         response = requests.get(download_uri, headers=headers)
         if response.status_code == 200:
             return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
             
-    # ניסיון שני: הורדת המדיה דרך ה-API הרשמי
-    if resource_name:
-        try:
-            # התיקון כאן: הוספנו את alt='media' לבקשה בדיוק כפי שגוגל דרשה
-            request = service.media().download(resourceName=resource_name, alt='media')
-            file_stream = io.BytesIO()
-            downloader = MediaIoBaseDownload(file_stream, request)
-            done = False
-            while done is False:
-                status, done = downloader.next_chunk()
-            file_stream.seek(0)
-            return file_stream, attachment.get('contentType', 'application/octet-stream')
-        except Exception as e:
-            print(f" > שגיאה בהורדת מדיה דרך resourceName: {e}")
-            
-    print(" > שגיאה: לא נמצא קישור הורדה או מזהה חוקי להורדת הקובץ.")
+    print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף (לא דרך API ולא דרך קישור).")
     return None, None
-
+    
 def get_all_messages(service, space_name):
     messages = []
     page_token = None
