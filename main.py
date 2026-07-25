@@ -25,9 +25,7 @@ def download_attachment(attachment, service, creds):
     
     headers = {'Authorization': f'Bearer {creds.token}'}
     
-    # מעקף: הורדה ישירה דרך ה-API (Media endpoint) ללא תלות בספריית פייתון
     if resource_name:
-        # אנחנו מרכיבים את כתובת ה-API להורדת מדיה, וקובעים בכוח את alt=media
         media_url = f"https://chat.googleapis.com/v1/media/{resource_name}?alt=media"
         try:
             response = requests.get(media_url, headers=headers)
@@ -39,7 +37,6 @@ def download_attachment(attachment, service, creds):
         except Exception as e:
             print(f" > שגיאת תקשורת בהורדה דרך API ישיר: {e}")
 
-    # גיבוי: הורדה דרך קישור ישיר 
     elif download_uri:
         response = requests.get(download_uri, headers=headers)
         if response.status_code == 200:
@@ -47,7 +44,7 @@ def download_attachment(attachment, service, creds):
             
     print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף (לא דרך API ולא דרך קישור).")
     return None, None
-    
+
 def get_all_messages(service, space_name):
     messages = []
     page_token = None
@@ -161,10 +158,6 @@ def sync_new_messages(service, creds, source_space, target_space):
                 created_message = service.spaces().messages().create(**api_kwargs).execute()
             else:
                 for i, attachment_info in enumerate(attachments):
-                    # הדפסת הנתונים למקרה של תקלה
-                    print(f" > נתוני קובץ גולמיים: {json.dumps(attachment_info, ensure_ascii=False)}")
-                    
-                    # העברת ה-service כדי לאפשר הורדה של תמונות
                     file_stream, mime_type = download_attachment(attachment_info, service, creds)
                     
                     current_body = msg_body.copy() if i == 0 else {'text': f"*(קובץ נוסף מ-{sender_name})*"}
@@ -182,11 +175,28 @@ def sync_new_messages(service, creds, source_space, target_space):
                     
                     if file_stream:
                         media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
-                        api_kwargs['media_body'] = media_upload
-                        msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                        
+                        try:
+                            # שלב 1: העלאת המדיה למרחב היעד של גוגל 
+                            upload_res = service.media().upload(
+                                parent=target_space,
+                                media_body=media_upload
+                            ).execute()
+                            
+                            # הוספת המזהה של הקובץ לתוך גוף ההודעה
+                            attachment_data_ref = upload_res.get('attachmentDataRef')
+                            if attachment_data_ref:
+                                current_body['attachment'] = [{'attachmentDataRef': attachment_data_ref}]
+                                
+                            # שלב 2: יצירת ההודעה והצמדת הקובץ שהועלה
+                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                        except Exception as e:
+                            print(f" > שגיאה בהעלאת מדיה למרחב היעד: {e}")
+                            current_body['text'] += "\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ להודעה]*"
+                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
                     else:
                         if not drive_id:
-                            current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להעתיק. בדוק את מרחב המקור.]*"
+                            current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להוריד ממרחב המקור]*"
                         msg_res = service.spaces().messages().create(**api_kwargs).execute()
                         
                     if i == 0:
@@ -207,8 +217,7 @@ def sync_new_messages(service, creds, source_space, target_space):
     print("הסנכרון הסתיים וקובץ הזיכרון (JSON) עודכן.")
 
 if __name__ == '__main__':
-    # ודא שהמזהים כאן נכונים עבור מרחב המקור ומרחב היעד שלך
-    SOURCE_SPACE = 'spaces/AAQASiObNm8'
+    SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
     chat_service, creds = authenticate_google_chat()
