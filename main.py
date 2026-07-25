@@ -176,10 +176,14 @@ def sync_new_messages(service, creds, source_space, target_space):
                     if file_stream:
                         media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
                         
+                        # התיקון: שליפת השם והעברתו לפונקציית ההעלאה
+                        file_name = attachment_info.get('contentName', 'attachment_file')
+                        
                         try:
                             # שלב 1: העלאת המדיה למרחב היעד של גוגל 
                             upload_res = service.media().upload(
                                 parent=target_space,
+                                filename=file_name,
                                 media_body=media_upload
                             ).execute()
                             
@@ -192,7 +196,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
                         except Exception as e:
                             print(f" > שגיאה בהעלאת מדיה למרחב היעד: {e}")
-                            current_body['text'] += "\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ להודעה]*"
+                            current_body['text'] += f"\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ ({file_name}) להודעה]*"
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
                     else:
                         if not drive_id:
@@ -217,6 +221,7 @@ def sync_new_messages(service, creds, source_space, target_space):
     print("הסנכרון הסתיים וקובץ הזיכרון (JSON) עודכן.")
 
 if __name__ == '__main__':
+    # ודא שהמזהים כאן נכונים עבור מרחב המקור ומרחב היעד שלך
     SOURCE_SPACE = 'spaces/AAQASiObNm8'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
