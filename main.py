@@ -21,7 +21,7 @@ def authenticate_google_chat():
 def download_attachment(attachment, creds):
     download_uri = attachment.get('attachmentDataRef', {}).get('downloadUri')
     if not download_uri:
-        print(f" > שגיאה בהורדת מדיה: לא נמצא קישור הורדה (downloadUri). ייתכן שזהו קובץ Google Drive או שאין הרשאת הורדה לקובץ זה.")
+        print(" > שגיאה בהורדת מדיה: לא נמצא קישור הורדה (downloadUri).")
         return None, None
     
     headers = {'Authorization': f'Bearer {creds.token}'}
@@ -30,7 +30,7 @@ def download_attachment(attachment, creds):
     if response.status_code == 200:
         return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
     else:
-        print(f" > שגיאה בהורדת המדיה מהקישור. קוד סטטוס: {response.status_code}. פירוט השגיאה: {response.text}")
+        print(f" > שגיאה בהורדת המדיה. קוד סטטוס: {response.status_code}")
         return None, None
 
 def get_all_messages(service, space_name):
@@ -62,7 +62,6 @@ def load_state():
     return {"last_msg_id": None, "threads": {}}
 
 def save_state(state):
-    # שומר רק את ה-200 שרשורים האחרונים
     if len(state['threads']) > 200:
         keys_to_keep = list(state['threads'].keys())[-200:]
         state['threads'] = {k: state['threads'][k] for k in keys_to_keep}
@@ -123,6 +122,7 @@ def sync_new_messages(service, creds, source_space, target_space):
             attachments = original_msg.get('attachment', [])
             
             if not original_text and not attachments:
+                state["last_msg_id"] = original_msg_id
                 continue
 
             new_text = f"*{sender_name}:*\n{original_text}" if original_text else f"*{sender_name}:*"
@@ -133,17 +133,19 @@ def sync_new_messages(service, creds, source_space, target_space):
                     msg_body['thread'] = {'name': state['threads'][original_thread_id]}
                 else:
                     print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר.")
+                    state["last_msg_id"] = original_msg_id
                     continue 
 
             created_message = None
 
-            # הוספת פרמטר החובה של גוגל לניהול שרשורים
             if not attachments:
-                created_message = service.spaces().messages().create(
-                    parent=target_space,
-                    body=msg_body,
-                    messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
-                ).execute()
+                # יצירת מילון פרמטרים דינאמי לבקשה
+                api_kwargs = {'parent': target_space, 'body': msg_body}
+                # נוסיף את הגדרת השרשור רק אם ההודעה מיועדת לתוך שרשור קיים
+                if 'thread' in msg_body:
+                    api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+                
+                created_message = service.spaces().messages().create(**api_kwargs).execute()
             else:
                 for i, attachment_info in enumerate(attachments):
                     file_stream, mime_type = download_attachment(attachment_info, creds)
@@ -152,40 +154,35 @@ def sync_new_messages(service, creds, source_space, target_space):
                     if 'thread' in msg_body:
                         current_body['thread'] = msg_body['thread']
                     
+                    api_kwargs = {'parent': target_space, 'body': current_body}
+                    if 'thread' in current_body:
+                        api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+                    
                     if file_stream:
                         media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
-                        msg_res = service.spaces().messages().create(
-                            parent=target_space,
-                            body=current_body,
-                            media_body=media_upload,
-                            messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
-                        ).execute()
-                        if i == 0:
-                            created_message = msg_res
-                    else:
-                        # אם הקובץ נכשל בהורדה, נעלה רק את הטקסט שלו
-                        msg_res = service.spaces().messages().create(
-                            parent=target_space,
-                            body=current_body,
-                            messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
-                        ).execute()
-                        if i == 0:
-                            created_message = msg_res
+                        api_kwargs['media_body'] = media_upload
+                        
+                    msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                    if i == 0:
+                        created_message = msg_res
                             
             if created_message and is_parent_message and original_thread_id:
                 new_thread_id = created_message.get('thread', {}).get('name')
                 if new_thread_id:
                     state['threads'][original_thread_id] = new_thread_id
+            
+            # עדכון הזיכרון מתבצע רק אחרי שההודעה הועתקה בהצלחה!
+            state["last_msg_id"] = original_msg_id
                     
         except Exception as e:
             print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
+            # במקרה של שגיאה, עוצרים את הלולאה כדי לא לדלג על הודעות בריצה הבאה
+            break
 
-    state["last_msg_id"] = new_messages[-1]['name']
     save_state(state)
-    print("הסנכרון הסתיים בהצלחה וקובץ הזיכרון (JSON) עודכן.")
+    print("הסנכרון הסתיים וקובץ הזיכרון (JSON) עודכן.")
 
 if __name__ == '__main__':
-    # הכנס כאן את המזהים שלך
     SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
