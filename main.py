@@ -16,17 +16,22 @@ def authenticate_google_chat():
     token_info = json.loads(os.environ['GCP_TOKEN'])
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
     service = build('chat', 'v1', credentials=creds)
-    return service, creds # השינוי: מחזיר את שניהם
+    return service, creds
 
 def download_attachment(attachment, creds):
     download_uri = attachment.get('attachmentDataRef', {}).get('downloadUri')
     if not download_uri:
+        print(f" > שגיאה בהורדת מדיה: לא נמצא קישור הורדה (downloadUri). ייתכן שזהו קובץ Google Drive או שאין הרשאת הורדה לקובץ זה.")
         return None, None
+    
     headers = {'Authorization': f'Bearer {creds.token}'}
     response = requests.get(download_uri, headers=headers)
+    
     if response.status_code == 200:
         return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
-    return None, None
+    else:
+        print(f" > שגיאה בהורדת המדיה מהקישור. קוד סטטוס: {response.status_code}. פירוט השגיאה: {response.text}")
+        return None, None
 
 def get_all_messages(service, space_name):
     messages = []
@@ -57,7 +62,7 @@ def load_state():
     return {"last_msg_id": None, "threads": {}}
 
 def save_state(state):
-    # שומר רק את ה-200 שרשורים האחרונים כדי שהקובץ לא יגדל לנצח
+    # שומר רק את ה-200 שרשורים האחרונים
     if len(state['threads']) > 200:
         keys_to_keep = list(state['threads'].keys())[-200:]
         state['threads'] = {k: state['threads'][k] for k in keys_to_keep}
@@ -75,7 +80,6 @@ def sync_new_messages(service, creds, source_space, target_space):
     last_id = state.get("last_msg_id")
 
     if not last_id:
-        # ריצת אתחול
         state["last_msg_id"] = messages[-1]['name']
         save_state(state)
         print("ריצת אתחול: נשמר המזהה האחרון. ההעתקה תתחיל בפועל מהריצה הבאה.")
@@ -91,7 +95,7 @@ def sync_new_messages(service, creds, source_space, target_space):
     if index != -1:
         new_messages = messages[index + 1:]
     else:
-        new_messages = messages[-50:] # גיבוי אם ההודעה נמחקה
+        new_messages = messages[-50:] 
 
     if not new_messages:
         print("אין הודעות חדשות להעתקה הפעם.")
@@ -104,16 +108,12 @@ def sync_new_messages(service, creds, source_space, target_space):
             original_msg_id = original_msg.get('name', '')
             original_thread_id = original_msg.get('thread', {}).get('name', '')
             
-            # זיהוי חכם של הודעה ראשית - תומך גם בתבנית כפולה של ה-API
             is_parent_message = False
             if original_msg_id and original_thread_id:
                 msg_id_part = original_msg_id.split('/')[-1]
                 thread_id_part = original_thread_id.split('/')[-1]
-                
-                # בדיקה: האם המזהה זהה לשרשור או בתבנית ThreadID.ThreadID
                 is_parent_message = (msg_id_part == thread_id_part) or (msg_id_part == f"{thread_id_part}.{thread_id_part}")
 
-            # שליפת שם השולח
             sender_info = original_msg.get('sender', {})
             sender_name = sender_info.get('displayName')
             if not sender_name:
@@ -122,7 +122,6 @@ def sync_new_messages(service, creds, source_space, target_space):
             original_text = original_msg.get('text', '')
             attachments = original_msg.get('attachment', [])
             
-            # סינון הודעות ריקות לחלוטין (ללא טקסט וללא קבצים)
             if not original_text and not attachments:
                 continue
 
@@ -130,25 +129,25 @@ def sync_new_messages(service, creds, source_space, target_space):
             msg_body = {'text': new_text}
             
             if not is_parent_message:
-                # זוהי תגובה. נבדוק אם השרשור קיים בזיכרון
                 if original_thread_id in state['threads']:
                     msg_body['thread'] = {'name': state['threads'][original_thread_id]}
                 else:
-                    print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר. מדלג כדי לא להעלות לראשי.")
+                    print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר.")
                     continue 
 
             created_message = None
 
+            # הוספת פרמטר החובה של גוגל לניהול שרשורים
             if not attachments:
                 created_message = service.spaces().messages().create(
                     parent=target_space,
-                    body=msg_body
+                    body=msg_body,
+                    messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                 ).execute()
             else:
                 for i, attachment_info in enumerate(attachments):
                     file_stream, mime_type = download_attachment(attachment_info, creds)
                     
-                    # הטקסט המלא נשלח רק בקובץ הראשון
                     current_body = msg_body.copy() if i == 0 else {'text': f"*(קובץ נוסף מ-{sender_name})*"}
                     if 'thread' in msg_body:
                         current_body['thread'] = msg_body['thread']
@@ -158,19 +157,21 @@ def sync_new_messages(service, creds, source_space, target_space):
                         msg_res = service.spaces().messages().create(
                             parent=target_space,
                             body=current_body,
-                            media_body=media_upload
+                            media_body=media_upload,
+                            messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                         ).execute()
                         if i == 0:
                             created_message = msg_res
                     else:
+                        # אם הקובץ נכשל בהורדה, נעלה רק את הטקסט שלו
                         msg_res = service.spaces().messages().create(
                             parent=target_space,
-                            body=current_body
+                            body=current_body,
+                            messageReplyOption='REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                         ).execute()
                         if i == 0:
                             created_message = msg_res
                             
-            # עדכון מילון השרשורים (רק אם זו הודעה ראשית)
             if created_message and is_parent_message and original_thread_id:
                 new_thread_id = created_message.get('thread', {}).get('name')
                 if new_thread_id:
@@ -182,7 +183,9 @@ def sync_new_messages(service, creds, source_space, target_space):
     state["last_msg_id"] = new_messages[-1]['name']
     save_state(state)
     print("הסנכרון הסתיים בהצלחה וקובץ הזיכרון (JSON) עודכן.")
+
 if __name__ == '__main__':
+    # הכנס כאן את המזהים שלך
     SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
