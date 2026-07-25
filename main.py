@@ -15,7 +15,8 @@ STATE_FILE = 'sync_data.json'
 def authenticate_google_chat():
     token_info = json.loads(os.environ['GCP_TOKEN'])
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
-    return build('chat', 'v1', credentials=creds)
+    service = build('chat', 'v1', credentials=creds)
+    return service, creds # השינוי: מחזיר את שניהם
 
 def download_attachment(attachment, creds):
     download_uri = attachment.get('attachmentDataRef', {}).get('downloadUri')
