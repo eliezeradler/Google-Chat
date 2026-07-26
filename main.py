@@ -126,10 +126,20 @@ def sync_new_messages(service, creds, source_space, target_space):
                 is_parent_message = (msg_id_part == thread_id_part) or (msg_id_part == f"{thread_id_part}.{thread_id_part}")
 
             sender_info = original_msg.get('sender', {})
+            # שורת ההדפסה שתגלה לנו איזה מידע גוגל מספקת על השולח
+            print(f" > נתוני שולח גולמיים: {json.dumps(sender_info, ensure_ascii=False)}")
+            
             sender_name = sender_info.get('displayName')
             if not sender_name:
-                sender_name = sender_info.get('email', 'משתמש לא ידוע')
-
+                sender_name = sender_info.get('email')
+            
+            # אם גם שם וגם אימייל חסרים, נשלוף בינתיים את המזהה (ID) של המשתמש
+            if not sender_name:
+                raw_name = sender_info.get('name', '')
+                if raw_name:
+                    sender_name = f"מזהה: {raw_name.split('/')[-1]}"
+                else:
+                    sender_name = 'משתמש לא ידוע'
             original_text = original_msg.get('text', '')
             attachments = original_msg.get('attachment', [])
             
