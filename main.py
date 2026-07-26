@@ -131,7 +131,7 @@ def sync_new_messages(service, creds, source_space, target_space):
             if not sender_name:
                 sender_name = sender_info.get('email')
             
-            # אם השם לא הגיע עם ההודעה, נמשוך אותו מתוך רשימת חברי המרחב (Space Members)
+            # אם השם לא הגיע עם ההודעה, נמשוך אותו מתוך רשימת חברי המרחב
             if not sender_name:
                 raw_name = sender_info.get('name', '')
                 if raw_name:
@@ -139,13 +139,15 @@ def sync_new_messages(service, creds, source_space, target_space):
                         user_id = raw_name.split('/')[-1]
                         member_resource = f"{source_space}/members/{user_id}"
                         
-                        # קריאה ל-API לשליפת פרטי המשתמש מתוך חברי מרחב המקור
+                        # קריאה ל-API לשליפת פרטי המשתמש
                         member_info = service.spaces().members().get(name=member_resource).execute()
                         
-                        # התיקון: חיפוש תחת המפתח 'member' במקום 'user'
-                        user_data = member_info.get('member', {})
+                        # שורת ההדפסה החדשה: בוא נראה מה גוגל באמת מחזירה לנו!
+                        print(f" > תשובת גוגל לבקשת חבר מרחב: {json.dumps(member_info, ensure_ascii=False)}")
                         
+                        user_data = member_info.get('member', {})
                         sender_name = user_data.get('displayName')
+                        
                         if not sender_name:
                             sender_name = user_data.get('email')
                         if not sender_name:
