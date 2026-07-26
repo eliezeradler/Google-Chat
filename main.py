@@ -141,7 +141,9 @@ def sync_new_messages(service, creds, source_space, target_space):
                         
                         # קריאה ל-API לשליפת פרטי המשתמש מתוך חברי מרחב המקור
                         member_info = service.spaces().members().get(name=member_resource).execute()
-                        user_data = member_info.get('user', {})
+                        
+                        # התיקון: חיפוש תחת המפתח 'member' במקום 'user'
+                        user_data = member_info.get('member', {})
                         
                         sender_name = user_data.get('displayName')
                         if not sender_name:
@@ -151,7 +153,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                             
                     except Exception as e:
                         print(f" > שגיאה במשיכת פרטי חבר מרחב ({raw_name}): {e}")
-                        sender_name = f"מזהה: {raw_name.split('/')[-1]}"
+                        sender_name = f"מזהה: {user_id}"
                 else:
                     sender_name = 'משתמש לא ידוע'
             original_text = original_msg.get('text', '')
