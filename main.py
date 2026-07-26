@@ -130,21 +130,27 @@ def sync_new_messages(service, creds, source_space, target_space):
             if not sender_name:
                 sender_name = sender_info.get('email')
             
-            # אם אין שם ואין אימייל, נשתמש במילון המזהים
+            # אם השם לא הגיע עם ההודעה, נמשוך אותו מתוך רשימת חברי המרחב (Space Members)
             if not sender_name:
                 raw_name = sender_info.get('name', '')
-                
-                # מילון שמות מותאם אישית
-                # אפשר להוסיף כאן עוד משתמשים בעתיד (מזהה: שם תצוגה)
-                known_users = {
-                    "users/118084898120064049685": "אליעזר אדלר"
-                }
-                
-                if raw_name in known_users:
-                    sender_name = known_users[raw_name]
-                elif raw_name:
-                    # אם זה משתמש אחר שלא מוגדר במילון
-                    sender_name = f"מזהה: {raw_name.split('/')[-1]}"
+                if raw_name:
+                    try:
+                        user_id = raw_name.split('/')[-1]
+                        member_resource = f"{source_space}/members/{user_id}"
+                        
+                        # קריאה ל-API לשליפת פרטי המשתמש מתוך חברי מרחב המקור
+                        member_info = service.spaces().members().get(name=member_resource).execute()
+                        user_data = member_info.get('user', {})
+                        
+                        sender_name = user_data.get('displayName')
+                        if not sender_name:
+                            sender_name = user_data.get('email')
+                        if not sender_name:
+                            sender_name = f"מזהה: {user_id}"
+                            
+                    except Exception as e:
+                        print(f" > שגיאה במשיכת פרטי חבר מרחב ({raw_name}): {e}")
+                        sender_name = f"מזהה: {raw_name.split('/')[-1]}"
                 else:
                     sender_name = 'משתמש לא ידוע'
             original_text = original_msg.get('text', '')
