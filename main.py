@@ -175,15 +175,13 @@ def sync_new_messages(service, creds, source_space, target_space):
                     
                     if file_stream:
                         media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
-                        
-                        # התיקון: שליפת השם והעברתו לפונקציית ההעלאה
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         
                         try:
-                            # שלב 1: העלאת המדיה למרחב היעד של גוגל 
+                            # שלב 1: העלאת המדיה למרחב היעד של גוגל - מתוקן עם body
                             upload_res = service.media().upload(
                                 parent=target_space,
-                                filename=file_name,
+                                body={'filename': file_name},
                                 media_body=media_upload
                             ).execute()
                             
