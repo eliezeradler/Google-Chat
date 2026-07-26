@@ -220,7 +220,7 @@ def sync_new_messages(service, creds, source_space, target_space):
 
 if __name__ == '__main__':
     # ודא שהמזהים כאן נכונים עבור מרחב המקור ומרחב היעד שלך
-    SOURCE_SPACE = 'spaces/AAQASiObNm8'
+    SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
     chat_service, creds = authenticate_google_chat()
