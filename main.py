@@ -9,6 +9,7 @@ from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 SCOPES = [
     'https://www.googleapis.com/auth/chat.messages',
     'https://www.googleapis.com/auth/chat.spaces.readonly'
+    'https://www.googleapis.com/auth/chat.memberships.readonly'
 ]
 STATE_FILE = 'sync_data.json'
 
