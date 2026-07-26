@@ -130,26 +130,21 @@ def sync_new_messages(service, creds, source_space, target_space):
             if not sender_name:
                 sender_name = sender_info.get('email')
             
-            # אם השם לא הגיע יחד עם ההודעה, נבקש מגוגל את פרטי המשתמש המלאים אוטומטית
+            # אם אין שם ואין אימייל, נשתמש במילון המזהים
             if not sender_name:
                 raw_name = sender_info.get('name', '')
-                if raw_name:
-                    try:
-                        # קריאה ל-API לקבלת פרופיל המשתמש לפי המזהה שלו
-                        user_profile = service.users().get(name=raw_name).execute()
-                        sender_name = user_profile.get('displayName')
-                        
-                        # אם עדיין אין שם תצוגה, ננסה לקחת את האימייל
-                        if not sender_name:
-                            sender_name = user_profile.get('email')
-                            
-                        # אם שניהם חסרים, נשתמש במזהה כגיבוי אחרון
-                        if not sender_name:
-                            sender_name = f"מזהה: {raw_name.split('/')[-1]}"
-                            
-                    except Exception as e:
-                        print(f" > שגיאה במשיכת פרטי משתמש ({raw_name}): {e}")
-                        sender_name = f"מזהה: {raw_name.split('/')[-1]}"
+                
+                # מילון שמות מותאם אישית
+                # אפשר להוסיף כאן עוד משתמשים בעתיד (מזהה: שם תצוגה)
+                known_users = {
+                    "users/118084898120064049685": "אליעזר אדלר"
+                }
+                
+                if raw_name in known_users:
+                    sender_name = known_users[raw_name]
+                elif raw_name:
+                    # אם זה משתמש אחר שלא מוגדר במילון
+                    sender_name = f"מזהה: {raw_name.split('/')[-1]}"
                 else:
                     sender_name = 'משתמש לא ידוע'
             original_text = original_msg.get('text', '')
