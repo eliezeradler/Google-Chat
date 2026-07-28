@@ -252,8 +252,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                     
         except Exception as e:
             print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
-            break
-
+            continue
     print("הסנכרון הסתיים בהצלחה.")
 
 if __name__ == '__main__':
