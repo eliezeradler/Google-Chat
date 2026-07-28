@@ -1,338 +1,264 @@
-import re
 import os
-import time
 import json
-import difflib
-import feedparser
-from bs4 import BeautifulSoup
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
+import io
+import time  # הוספנו את ספריית הזמן להשהיה
 import requests
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-SPACE_NAME = os.environ.get('CHAT_SPACE')
-RSS_URLS_ENV = os.environ.get('RSS_URL', '')
-# מחליף ירידות שורה בפסיקים כדי שהקוד יתמוך גם ברשימה
-RSS_URLS_ENV = RSS_URLS_ENV.replace('\n', ',').replace('\r', ',')
-RSS_URLS = [url.strip() for url in RSS_URLS_ENV.split(',') if url.strip()]
-STATE_FILE = 'last_ids.json'
-
-CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
-CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
-REFRESH_TOKEN = os.environ.get('GOOGLE_REFRESH_TOKEN')
-
-# מילון המזהים לשמות המשתמשים
-USER_NAMES = {
-    "117147849218349801765": "אברהם פרידמן",
-    "117693190766287637519": "ניהול חדש",
-    "114525315288128139376": "levkivker",
-    "100961944946973009260": "Netanel",
-    "113248425146167624902": "s.levkivker"
-}
-
-def get_user_credentials():
-    print("Authenticating as USER via OAuth...")
-    creds = Credentials(
-        token=None,
-        refresh_token=REFRESH_TOKEN,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        scopes=["https://www.googleapis.com/auth/chat.messages"]
-    )
-    creds.refresh(Request())
-    return creds.token
-
-def upload_media_to_chat(token, media_url, filename):
-    try:
-        print(f"Downloading media: {media_url}")
-        res_media = requests.get(media_url, timeout=60)
-        res_media.raise_for_status()
-        
-        # זיהוי אוטומטי של סוג התוכן כדי שגוגל ידע איך להציג אותו
-        content_type = "application/octet-stream" # ברירת מחדל לקבצים כלליים
-        if filename.endswith(".mp4"):
-            content_type = "video/mp4"
-        elif filename.endswith(".jpg") or filename.endswith(".jpeg"):
-            content_type = "image/jpeg"
-        elif filename.endswith(".png"):
-            content_type = "image/png"
-        elif filename.endswith(".webp"):
-            content_type = "image/webp"
-        elif filename.endswith(".mp3"):
-            content_type = "audio/mpeg"
-        elif filename.endswith(".pdf"):
-            content_type = "application/pdf"
-        
-        upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": content_type
-        }
-        
-        print(f"Uploading file as {content_type} to Google Chat servers...")
-        res = requests.post(upload_url, headers=headers, data=res_media.content, timeout=60)
-        
-        if res.status_code != 200:
-            print(f"Upload failed: {res.text}")
-            return None
-            
-        data = res.json()
-        return data.get('attachmentDataRef', {}).get('attachmentUploadToken')
-        
-    except Exception as e:
-        print(f"Error uploading: {e}")
-        return None
-
-# רשימה מעודכנת הממוקדת בסממנים שיווקיים ומסחריים
-AD_WORDS = [
-    "לפרטים נוספים לחצו",
-    "לרכישה",
-    "להזמנות",
-    "מכירת",
-    "לשליחת קורות חיים",
-    "לפרטים והרשמה",
-    "הלינק",
-    "השאירו פרטים",
-    "מספר המקומות מוגבל",
-    "השאירו פרטים",
-    "אסור לכם לפספס",
-    "לחצו כאן ",
-    "לפרטים נוספים",
-    "יפה תורה עם דרך ארץ",
-    "לפרטים מלאים",
-    "לרכישת כרטיסים",
-    "utm_source=",   # מזהה קישורי פרסומות קלאסי
-    "utm_campaign=", # מזהה קישורי פרסומות קלאסי
-    "ללא עלות וללא התחייבות"
+SCOPES = [
+    'https://www.googleapis.com/auth/chat.messages',
+    'https://www.googleapis.com/auth/chat.spaces.readonly',
+    'https://www.googleapis.com/auth/chat.memberships.readonly'
 ]
+STATE_FILE = 'sync_data.json'
 
-def is_ad(text):
-    """בודק אם הטקסט מכיל סממנים מובהקים של פרסומת"""
-    if not text:
-        return False
-    for word in AD_WORDS:
-        if word in text:
-            return True
-    return False
+def authenticate_google_chat():
+    token_info = json.loads(os.environ['GCP_TOKEN'])
+    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+    service = build('chat', 'v1', credentials=creds)
+    return service, creds
 
-def clean_text(text):
-    """מנקה קישורים מהטקסט"""
-    if not text:
-        return ""
-    # הסרת קישורי טלגרם
-    cleaned = re.sub(r'(https?://)?t\.me/[^\s]+', '', text)
-    # הסרת קישורי אינטרנט רגילים
-    cleaned = re.sub(r'https?://[^\s]+', '', cleaned)
-    # ניקוי רווחים מיותרים שנוצרו אחרי המחיקה
-    return cleaned.strip()
+def download_attachment(attachment, service, creds):
+    attachment_ref = attachment.get('attachmentDataRef', {})
+    download_uri = attachment_ref.get('downloadUri')
+    resource_name = attachment_ref.get('resourceName')
+    
+    headers = {'Authorization': f'Bearer {creds.token}'}
+    
+    if resource_name:
+        media_url = f"https://chat.googleapis.com/v1/media/{resource_name}?alt=media"
+        try:
+            response = requests.get(media_url, headers=headers)
+            if response.status_code == 200:
+                print(f" > מדיה ירדה בהצלחה דרך API ישיר ({resource_name})")
+                return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
+            else:
+                print(f" > שגיאה בהורדת מדיה דרך API. סטטוס: {response.status_code}")
+        except Exception as e:
+            print(f" > שגיאת תקשורת בהורדה דרך API ישיר: {e}")
 
-def is_too_similar(new_title, seen_titles, threshold=0.6):
-    """בודק אם הכותרת החדשה דומה מאוד לכותרת שכבר קיימת ממקור אחר (מעל 60% דמיון)"""
-    if not new_title:
-        return False
-    for seen in seen_titles:
-        if difflib.SequenceMatcher(None, new_title, seen).ratio() >= threshold:
-            return True
-    return False
+    elif download_uri:
+        response = requests.get(download_uri, headers=headers)
+        if response.status_code == 200:
+            return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
+            
+    print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף (לא דרך API ולא דרך קישור).")
+    return None, None
 
-def get_telegram_video_direct(post_url):
-    """
-    שולף את הוידאו ישירות מגרסת הרשת הפתוחה של טלגרם
-    רץ מתוך שרתי גיטהאב שיש להם גישה חופשית לכתובת
-    """
-    if not post_url or 't.me' not in post_url:
-        return None
+def get_all_messages(service, space_name):
+    messages = []
+    page_token = None
     try:
-        # מוסיף את פרמטר ההטמעה כדי לקבל את קובץ המדיה הישיר
-        embed_url = post_url if '?embed=1' in post_url else post_url + "?embed=1"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(embed_url, headers=headers, timeout=15)
-        
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            video = soup.find('video')
-            if video and video.get('src'):
-                return video['src']
+        while True:
+            results = service.spaces().messages().list(
+                parent=space_name, 
+                pageSize=1000,
+                pageToken=page_token
+            ).execute()
+            
+            if 'messages' in results:
+                messages.extend(results['messages'])
+            
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+        return messages
     except Exception as e:
-        print(f"Failed to scrape video directly: {e}")
-    return None
+        print(f"שגיאה במשיכת הודעות: {e}")
+        return []
 
-def main():
-    if not RSS_URLS: return
-    states = {}
+def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            try: states = json.load(f)
-            except: pass
+        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {"last_msg_id": None, "threads": {}}
 
-    # הבטחת קיום רשימת כותרות גלובלית למניעת כפילויות ממקורות שונים
-    if "global_seen_titles" not in states:
-        states["global_seen_titles"] = []
-
-    token = None
-    for rss_url in RSS_URLS:
-        if not rss_url: continue
-        print(f"\nChecking feed: {rss_url}")
-        feed = feedparser.parse(rss_url)
-        feed_title = getattr(feed.feed, 'title', 'מקור לא ידוע')
+def save_state(state):
+    if len(state['threads']) > 200:
+        keys_to_keep = list(state['threads'].keys())[-200:]
+        state['threads'] = {k: state['threads'][k] for k in keys_to_keep}
         
-        # הפיכת הזיכרון הישן (טקסט) לרשימה חכמה
-        last_ids = states.get(rss_url, [])
-        if isinstance(last_ids, str): 
-            last_ids = [last_ids]
-        
-        new_items = []
-        for entry in feed.entries:
-            post_text = entry.get('summary', entry.get('title', ''))
+    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
 
-            if is_ad(post_text):
-                print("Ad detected, skipping message.")
+def sync_new_messages(service, creds, source_space, target_space):
+    messages = get_all_messages(service, source_space)
+    if not messages:
+        print("לא נמצאו הודעות במרחב המקור.")
+        return
+
+    state = load_state()
+    last_id = state.get("last_msg_id")
+
+    if not last_id:
+        state["last_msg_id"] = messages[-1]['name']
+        save_state(state)
+        print("ריצת אתחול: נשמר המזהה האחרון. ההעתקה תתחיל בפועל מהריצה הבאה.")
+        return
+
+    index = -1
+    for i, msg in enumerate(messages):
+        if msg['name'] == last_id:
+            index = i
+            break
+
+    new_messages = []
+    if index != -1:
+        new_messages = messages[index + 1:]
+    else:
+        new_messages = messages[-50:] 
+
+    if not new_messages:
+        print("אין הודעות חדשות להעתקה הפעם.")
+        return
+
+    print(f"נמצאו {len(new_messages)} הודעות חדשות. מתחיל העתקה...")
+
+    for original_msg in new_messages:
+        try:
+            original_msg_id = original_msg.get('name', '')
+            original_thread_id = original_msg.get('thread', {}).get('name', '')
+            
+            is_parent_message = False
+            if original_msg_id and original_thread_id:
+                msg_id_part = original_msg_id.split('/')[-1]
+                thread_id_part = original_thread_id.split('/')[-1]
+                is_parent_message = (msg_id_part == thread_id_part) or (msg_id_part == f"{thread_id_part}.{thread_id_part}")
+
+            sender_info = original_msg.get('sender', {})
+            sender_name = sender_info.get('displayName')
+            if not sender_name:
+                sender_name = sender_info.get('email')
+            
+            # --- טיפול חכם בשמות המשתמשים ---
+            if not sender_name:
+                raw_name = sender_info.get('name', '')
+                if raw_name:
+                    # 1. מילון שמות עבור משתמשים שגוגל מסתירה את שמם (תוכל לעדכן כאן את השם האמיתי)
+                    known_users = {
+                        "users/117147849218349801765": "אברהם פרידמן",
+                        "users/117693190766287637519": "ניהול חדש",
+                        "users/114525315288128139376": "levkivker",
+                        "users/100961944946973009260": "Netanel",
+                        "users/113248425146167624902": "s.levkivker"
+                    }
+                    
+                    if raw_name in known_users:
+                        sender_name = known_users[raw_name]
+                    else:
+                        # 2. אם לא במילון, ננסה למשוך מה-API
+                        try:
+                            user_id = raw_name.split('/')[-1]
+                            member_resource = f"{source_space}/members/{user_id}"
+                            member_info = service.spaces().members().get(name=member_resource).execute()
+                            user_data = member_info.get('member', {})
+                            sender_name = user_data.get('displayName')
+                            if not sender_name:
+                                sender_name = user_data.get('email')
+                            if not sender_name:
+                                sender_name = f"מזהה: {user_id}"
+                        except Exception as e:
+                            print(f" > שגיאה במשיכת פרטי חבר מרחב ({raw_name}): {e}")
+                            sender_name = f"מזהה: {raw_name.split('/')[-1]}"
+                else:
+                    sender_name = 'משתמש לא ידוע'
+
+            original_text = original_msg.get('text', '')
+            attachments = original_msg.get('attachment', [])
+            
+            if not original_text and not attachments:
+                state["last_msg_id"] = original_msg_id
+                save_state(state) # שמירה רציפה למניעת כפילויות
                 continue
 
-            entry_id = getattr(entry, 'id', getattr(entry, 'link', ''))
+            new_text = f"*{sender_name}:*\n{original_text}" if original_text else f"*{sender_name}:*"
+            msg_body = {'text': new_text}
             
-            # 1. מניעת כפילויות מאותו מקור
-            if entry_id in last_ids:
-                break
+            if not is_parent_message:
+                if original_thread_id in state['threads']:
+                    msg_body['thread'] = {'name': state['threads'][original_thread_id]}
+                else:
+                    print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר.")
+                    state["last_msg_id"] = original_msg_id
+                    save_state(state) # שמירה רציפה
+                    continue 
 
-            # 2. מניעת כפילויות ממקורות שונים (כולל ניסוחים דומים)
-            item_title = getattr(entry, 'title', '').strip()
-            if item_title:
-                if item_title in states["global_seen_titles"] or is_too_similar(item_title, states["global_seen_titles"]):
-                    print("Similar content from another source, skipping.")
-                    continue
+            created_message = None
 
-            new_items.append(entry)
-            # עדכון הזיכרון בזמן אמת כדי למנוע כפילויות באותה ריצה
-            last_ids.append(entry_id)
-            if item_title:
-                states["global_seen_titles"].append(item_title)
-            
-        if not last_ids and len(new_items) > 2: new_items = new_items[:2]
-        if not new_items: continue
-        
-        new_items.reverse()
-        if not token: token = get_user_credentials()
-        
-        for item in new_items:
-            raw_title = getattr(item, 'title', '')
-            raw_desc = getattr(item, 'description', '')
-            
-            if raw_desc:
-                soup = BeautifulSoup(raw_desc, 'html.parser')
-                for br in soup.find_all("br"):
-                    br.replace_with("\n")
-                text = soup.get_text().strip()
-                if not text:
-                    text = raw_title.strip()
+            if not attachments:
+                api_kwargs = {'parent': target_space, 'body': msg_body}
+                if 'thread' in msg_body:
+                    api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+                
+                created_message = service.spaces().messages().create(**api_kwargs).execute()
             else:
-                text = raw_title.strip()
-            
-            text = clean_text(text)
-            
-            link = getattr(item, 'link', '')
-            attachment_tokens = []
-            
-            # 1. חיפוש כל הקבצים המצורפים להודעה (עובר על כל הרשימה)
-            if hasattr(item, 'enclosures') and item.enclosures:
-                for enc in item.enclosures:
-                    media_url = enc.get('href', enc.get('url', ''))
-                    if not media_url:
-                        continue
-                        
-                    enc_type = enc.get('type', '')
-                    filename = "file.dat"
+                for i, attachment_info in enumerate(attachments):
+                    file_stream, mime_type = download_attachment(attachment_info, service, creds)
                     
-                    # קביעת שם וסיומת הקובץ לפי הסוג
-                    if 'video' in enc_type or media_url.endswith('.mp4'):
-                        filename = "video.mp4"
-                    elif 'image' in enc_type or media_url.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                        filename = "image.jpg"
-                        if media_url.endswith('.png'): filename = "image.png"
-                    elif 'audio' in enc_type or media_url.endswith(('.mp3', '.ogg', '.wav')):
-                        filename = "audio.mp3"
-                    elif 'pdf' in enc_type or media_url.endswith('.pdf'):
-                        filename = "document.pdf"
-                        
-                    token_val = upload_media_to_chat(token, media_url, filename)
-                    if token_val:
-                        attachment_tokens.append(token_val)
-
-            # 2. גיבוי: אם אין enclosures, נסרוק את התוכן וננסה לשלוף את כל התמונות והסרטונים
-            if not attachment_tokens:
-                html_content = getattr(item, 'content', [{'value': ''}])[0].get('value', '') if hasattr(item, 'content') else getattr(item, 'description', '')
-                if html_content:
-                    soup = BeautifulSoup(html_content, 'html.parser')
-                    for vid in soup.find_all('video'):
-                        if vid.get('src'):
-                            token_val = upload_media_to_chat(token, vid['src'], "video.mp4")
-                            if token_val: attachment_tokens.append(token_val)
-                    for img in soup.find_all('img'):
-                        if img.get('src'):
-                            token_val = upload_media_to_chat(token, img['src'], "image.jpg")
-                            if token_val: attachment_tokens.append(token_val)
-
-            # --- תוספת: טיפול בוידאו שנדחה על ידי ה-RSS ---
-            if "is too big@" in text or "is too big@" in raw_desc:
-                print("RSS skipped video. Scraping directly via GitHub Actions...")
-                direct_video_url = get_telegram_video_direct(link)
-                
-                if direct_video_url:
-                    token_val = upload_media_to_chat(token, direct_video_url, "video.mp4")
-                    if token_val: 
-                        attachment_tokens.append(token_val)
-                        # מחיקת טקסט השגיאה של ה-RSS מההודעה הסופית
-                        text = re.sub(r'[A-Za-z0-9_]+Video is too big@', '', text).strip()
-            # ----------------------------------------------------
-
-            clean_title = feed_title.replace("Telegram Channel", "").replace("חדשות ללא צנזורה", "").replace("-", "").strip()
-            clean_title = clean_title.strip("•").strip()
-            
-            payload = {"text": f"*{clean_title}*\n\n{text}"}
-            
-            # צירוף של כל הקבצים שהעלינו לתוך ההודעה
-            if attachment_tokens:
-                print(f"Attaching {len(attachment_tokens)} files to message...")
-                payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
-            
-            msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            
-            res = requests.post(msg_url, headers=headers, json=payload)
-            if res.status_code == 200:
-                print(f"Message '{clean_title}' sent successfully!")
-                
-                # עדכון הזיכרון
-                entry_id = getattr(item, 'id', getattr(item, 'link', ''))
-                item_title = getattr(item, 'title', '').strip()
-                
-                if entry_id not in last_ids:
-                    last_ids.append(entry_id)
-                if item_title and item_title not in states["global_seen_titles"]:
-                    states["global_seen_titles"].append(item_title)
+                    current_body = msg_body.copy() if i == 0 else {'text': f"*(קובץ נוסף מ-{sender_name})*"}
+                    if 'thread' in msg_body:
+                        current_body['thread'] = msg_body['thread']
                     
-                # שמירת גיבוי מיידית לקובץ
-                states[rss_url] = last_ids[-50:]
-                states["global_seen_titles"] = states["global_seen_titles"][-100:]
-                try:
-                    with open(STATE_FILE, 'w') as f:
-                        json.dump(states, f)
-                except Exception as e:
-                    print(f"Error saving backup: {e}")
-            else:
-                print(f"Error posting: {res.text}")
-                
-            # השהיית זמן של 3 שניות לפני מעבר להודעה הבאה כדי למנוע חסימה (429) מגוגל
-            time.sleep(3)
-                
-        # שמירת 50 המזהים האחרונים לכל ערוץ
-        states[rss_url] = last_ids[-50:]
-        
-    # שמירת 100 הכותרות האחרונות גלובלית
-    states["global_seen_titles"] = states["global_seen_titles"][-100:]
-        
-    with open(STATE_FILE, 'w') as f:
-        json.dump(states, f)
+                    drive_id = attachment_info.get('driveDataRef', {}).get('driveFileId')
+                    if drive_id:
+                        drive_link = f"\n*🔗 מצורף קובץ Drive:* https://drive.google.com/file/d/{drive_id}/view"
+                        current_body['text'] = current_body.get('text', '') + drive_link
+                    
+                    api_kwargs = {'parent': target_space, 'body': current_body}
+                    if 'thread' in current_body:
+                        api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+                    
+                    if file_stream:
+                        media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
+                        file_name = attachment_info.get('contentName', 'attachment_file')
+                        
+                        try:
+                            upload_res = service.media().upload(
+                                parent=target_space,
+                                body={'filename': file_name},
+                                media_body=media_upload
+                            ).execute()
+                            
+                            attachment_data_ref = upload_res.get('attachmentDataRef')
+                            if attachment_data_ref:
+                                current_body['attachment'] = [{'attachmentDataRef': attachment_data_ref}]
+                                
+                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                        except Exception as e:
+                            print(f" > שגיאה בהעלאת מדיה למרחב היעד: {e}")
+                            current_body['text'] += f"\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ ({file_name}) להודעה]*"
+                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                    else:
+                        if not drive_id:
+                            current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להוריד ממרחב המקור]*"
+                        msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                        
+                    if i == 0:
+                        created_message = msg_res
+                            
+            if created_message and is_parent_message and original_thread_id:
+                new_thread_id = created_message.get('thread', {}).get('name')
+                if new_thread_id:
+                    state['threads'][original_thread_id] = new_thread_id
+            
+            # --- שמירת הזיכרון אחרי כל העתקה מוצלחת כדי למנוע כפילויות ---
+            state["last_msg_id"] = original_msg_id
+            save_state(state)
+            
+            # --- השהיה של 2 שניות למניעת עומס (שגיאת 429) ---
+            time.sleep(2)
+                    
+        except Exception as e:
+            print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
+            break
 
-if __name__ == "__main__":
-    main()
+    print("הסנכרון הסתיים בהצלחה.")
+
+if __name__ == '__main__':
+    SOURCE_SPACE = 'spaces/AAQArWIpnWI'
+    TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
+    
+    chat_service, creds = authenticate_google_chat()
+    sync_new_messages(chat_service, creds, SOURCE_SPACE, TARGET_SPACE)
