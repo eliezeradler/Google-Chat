@@ -138,7 +138,9 @@ def sync_new_messages(service, creds, source_space, target_space):
                 if raw_name:
                     # 1. מילון שמות עבור משתמשים שגוגל מסתירה את שמם (תוכל לעדכן כאן את השם האמיתי)
                     known_users = {
-                        "users/117147849218349801765": "שם המשתמש" # <-- כתוב כאן את השם האמיתי
+                        "users/117147849218349801765": "אברהם פרידמן",
+                        "users/117693190766287637519": "ניהול חדש",
+                        "users/114525315288128139376": "levkivker",
                     }
                     
                     if raw_name in known_users:
