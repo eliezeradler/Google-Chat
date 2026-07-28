@@ -37,16 +37,15 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
+          
+          # 1. מוסיפים את קובץ הזיכרון
           git add sync_data.json
           
-          # בודקים אם בכלל יש שינויים לקובץ הזיכרון
-          if ! git diff --cached --quiet; then
-            # קודם כל עושים commit (שומרים מקומית)
-            git commit -m "Update state and thread mapping"
-            # עכשיו בטוח לעשות pull כדי להסתנכרן עם השרת
-            git pull --rebase origin main
-            # ולבסוף דוחפים הכל חזרה
-            git push
-          else
-            echo "No changes to commit"
-          fi
+          # 2. שומרים אותו מקומית. הוספנו '|| true' כדי שהסקריפט לא יקרוס אם אין שינויים בקובץ
+          git commit -m "Update state and thread mapping" || true
+          
+          # 3. עכשיו כש"השולחן נקי", אפשר למשוך עדכונים מהשרת בבטחה
+          git pull --rebase origin main
+          
+          # 4. ולבסוף לדחוף הכל חזרה ל-GitHub
+          git push
