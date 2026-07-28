@@ -38,5 +38,15 @@ jobs:
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           git add sync_data.json
-          git pull --rebase origin main
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update state and thread mapping" && git push)
+          
+          # בודקים אם בכלל יש שינויים לקובץ הזיכרון
+          if ! git diff --cached --quiet; then
+            # קודם כל עושים commit (שומרים מקומית)
+            git commit -m "Update state and thread mapping"
+            # עכשיו בטוח לעשות pull כדי להסתנכרן עם השרת
+            git pull --rebase origin main
+            # ולבסוף דוחפים הכל חזרה
+            git push
+          else
+            echo "No changes to commit"
+          fi
