@@ -1,6 +1,7 @@
 import os
 import json
 import io
+import time  # הוספנו את ספריית הזמן להשהיה
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -131,38 +132,41 @@ def sync_new_messages(service, creds, source_space, target_space):
             if not sender_name:
                 sender_name = sender_info.get('email')
             
-            # אם השם לא הגיע עם ההודעה, נמשוך אותו מתוך רשימת חברי המרחב
+            # --- טיפול חכם בשמות המשתמשים ---
             if not sender_name:
                 raw_name = sender_info.get('name', '')
                 if raw_name:
-                    try:
-                        user_id = raw_name.split('/')[-1]
-                        member_resource = f"{source_space}/members/{user_id}"
-                        
-                        # קריאה ל-API לשליפת פרטי המשתמש
-                        member_info = service.spaces().members().get(name=member_resource).execute()
-                        
-                        # שורת ההדפסה החדשה: בוא נראה מה גוגל באמת מחזירה לנו!
-                        print(f" > תשובת גוגל לבקשת חבר מרחב: {json.dumps(member_info, ensure_ascii=False)}")
-                        
-                        user_data = member_info.get('member', {})
-                        sender_name = user_data.get('displayName')
-                        
-                        if not sender_name:
-                            sender_name = user_data.get('email')
-                        if not sender_name:
-                            sender_name = f"מזהה: {user_id}"
-                            
-                    except Exception as e:
-                        print(f" > שגיאה במשיכת פרטי חבר מרחב ({raw_name}): {e}")
-                        sender_name = f"מזהה: {user_id}"
+                    # 1. מילון שמות עבור משתמשים שגוגל מסתירה את שמם (תוכל לעדכן כאן את השם האמיתי)
+                    known_users = {
+                        "users/117147849218349801765": "שם המשתמש" # <-- כתוב כאן את השם האמיתי
+                    }
+                    
+                    if raw_name in known_users:
+                        sender_name = known_users[raw_name]
+                    else:
+                        # 2. אם לא במילון, ננסה למשוך מה-API
+                        try:
+                            user_id = raw_name.split('/')[-1]
+                            member_resource = f"{source_space}/members/{user_id}"
+                            member_info = service.spaces().members().get(name=member_resource).execute()
+                            user_data = member_info.get('member', {})
+                            sender_name = user_data.get('displayName')
+                            if not sender_name:
+                                sender_name = user_data.get('email')
+                            if not sender_name:
+                                sender_name = f"מזהה: {user_id}"
+                        except Exception as e:
+                            print(f" > שגיאה במשיכת פרטי חבר מרחב ({raw_name}): {e}")
+                            sender_name = f"מזהה: {raw_name.split('/')[-1]}"
                 else:
                     sender_name = 'משתמש לא ידוע'
+
             original_text = original_msg.get('text', '')
             attachments = original_msg.get('attachment', [])
             
             if not original_text and not attachments:
                 state["last_msg_id"] = original_msg_id
+                save_state(state) # שמירה רציפה למניעת כפילויות
                 continue
 
             new_text = f"*{sender_name}:*\n{original_text}" if original_text else f"*{sender_name}:*"
@@ -174,6 +178,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                 else:
                     print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר.")
                     state["last_msg_id"] = original_msg_id
+                    save_state(state) # שמירה רציפה
                     continue 
 
             created_message = None
@@ -206,19 +211,16 @@ def sync_new_messages(service, creds, source_space, target_space):
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         
                         try:
-                            # שלב 1: העלאת המדיה למרחב היעד של גוגל - מתוקן עם body
                             upload_res = service.media().upload(
                                 parent=target_space,
                                 body={'filename': file_name},
                                 media_body=media_upload
                             ).execute()
                             
-                            # הוספת המזהה של הקובץ לתוך גוף ההודעה
                             attachment_data_ref = upload_res.get('attachmentDataRef')
                             if attachment_data_ref:
                                 current_body['attachment'] = [{'attachmentDataRef': attachment_data_ref}]
                                 
-                            # שלב 2: יצירת ההודעה והצמדת הקובץ שהועלה
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
                         except Exception as e:
                             print(f" > שגיאה בהעלאת מדיה למרחב היעד: {e}")
@@ -237,17 +239,20 @@ def sync_new_messages(service, creds, source_space, target_space):
                 if new_thread_id:
                     state['threads'][original_thread_id] = new_thread_id
             
+            # --- שמירת הזיכרון אחרי כל העתקה מוצלחת כדי למנוע כפילויות ---
             state["last_msg_id"] = original_msg_id
+            save_state(state)
+            
+            # --- השהיה של 2 שניות למניעת עומס (שגיאת 429) ---
+            time.sleep(2)
                     
         except Exception as e:
             print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
             break
 
-    save_state(state)
-    print("הסנכרון הסתיים וקובץ הזיכרון (JSON) עודכן.")
+    print("הסנכרון הסתיים בהצלחה.")
 
 if __name__ == '__main__':
-    # ודא שהמזהים כאן נכונים עבור מרחב המקור ומרחב היעד שלך
     SOURCE_SPACE = 'spaces/AAQArWIpnWI'
     TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
     
