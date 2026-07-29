@@ -142,7 +142,11 @@ def sync_new_messages(service, creds, source_space, target_space):
                         "users/117693190766287637519": "ניהול חדש",
                         "users/114525315288128139376": "levkivker",
                         "users/100961944946973009260": "Netanel",
-                        "users/113248425146167624902": "s.levkivker"
+                        "users/113248425146167624902": "s.levkivker",
+                        "users/107235267519492805137": "Ben Ziyon g",
+                        "users/110801357268126058232": "שניאור א.",
+                        "users/103092947269637100183": "אלעזר",
+                        "users/115022370288768837848": "שלמה וי",
                     }
                     
                     if raw_name in known_users:
