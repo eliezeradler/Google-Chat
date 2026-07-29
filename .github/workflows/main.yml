@@ -16,10 +16,12 @@ jobs:
       
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          ref: main # מבטיח משיכה של הענף המעודכן ביותר בכל תחילת ריצה
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -31,7 +33,9 @@ jobs:
       - name: Run Sync Script
         env:
           GCP_TOKEN: ${{ secrets.GCP_TOKEN }}
-        run: python main.py
+        run: |
+          git pull origin main # מסנכרן את קובץ הזיכרון מהשרת רגע לפני הריצה
+          python main.py
 
       - name: Save Memory File (Commit)
         run: |
