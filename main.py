@@ -1,7 +1,7 @@
 import os
 import json
 import io
-import time  # הוספנו את ספריית הזמן להשהיה
+import time
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -72,13 +72,21 @@ def get_all_messages(service, space_name):
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {"last_msg_id": None, "threads": {}}
+            state = json.load(f)
+            # מוודא שרשימת המזהים קיימת למקרה שזה קובץ ישן
+            if "processed_ids" not in state: 
+                state["processed_ids"] = []
+            return state
+    return {"last_msg_id": None, "threads": {}, "processed_ids": []}
 
 def save_state(state):
-    if len(state['threads']) > 200:
+    # שומר רק 200 שרשורים כדי שהקובץ לא יתנפח
+    if len(state.get('threads', {})) > 200:
         keys_to_keep = list(state['threads'].keys())[-200:]
         state['threads'] = {k: state['threads'][k] for k in keys_to_keep}
+        
+    # זוכר רק את 500 ההודעות האחרונות למניעת כפילויות עתידיות
+    state['processed_ids'] = state.get('processed_ids', [])[-500:]
         
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
@@ -119,6 +127,14 @@ def sync_new_messages(service, creds, source_space, target_space):
     for original_msg in new_messages:
         try:
             original_msg_id = original_msg.get('name', '')
+            original_text = original_msg.get('text', '')
+            
+            # === חסימת כפילויות קשיחה ===
+            # אם המזהה של ההודעה כבר נמצא ברשימת הזיכרון, מדלגים עליה מיד
+            if original_msg_id in state.get('processed_ids', []):
+                print(f"דילוג: הודעה {original_msg_id} כבר הועתקה בעבר.")
+                continue
+
             original_thread_id = original_msg.get('thread', {}).get('name', '')
             
             is_parent_message = False
@@ -132,27 +148,20 @@ def sync_new_messages(service, creds, source_space, target_space):
             if not sender_name:
                 sender_name = sender_info.get('email')
             
-            # --- טיפול חכם בשמות המשתמשים ---
             if not sender_name:
                 raw_name = sender_info.get('name', '')
                 if raw_name:
-                    # 1. מילון שמות עבור משתמשים שגוגל מסתירה את שמם (תוכל לעדכן כאן את השם האמיתי)
                     known_users = {
                         "users/117147849218349801765": "אברהם פרידמן",
                         "users/117693190766287637519": "ניהול חדש",
                         "users/114525315288128139376": "levkivker",
                         "users/100961944946973009260": "Netanel",
-                        "users/113248425146167624902": "s.levkivker",
-                        "users/107235267519492805137": "Ben Ziyon g",
-                        "users/110801357268126058232": "שניאור א.",
-                        "users/103092947269637100183": "אלעזר",
-                        "users/115022370288768837848": "שלמה וי",
+                        "users/113248425146167624902": "s.levkivker"
                     }
                     
                     if raw_name in known_users:
                         sender_name = known_users[raw_name]
                     else:
-                        # 2. אם לא במילון, ננסה למשוך מה-API
                         try:
                             user_id = raw_name.split('/')[-1]
                             member_resource = f"{source_space}/members/{user_id}"
@@ -169,12 +178,14 @@ def sync_new_messages(service, creds, source_space, target_space):
                 else:
                     sender_name = 'משתמש לא ידוע'
 
-            original_text = original_msg.get('text', '')
             attachments = original_msg.get('attachment', [])
             
+            # אם אין טקסט ואין קובץ, מתעדים שראינו כדי לא לחזור עליה
             if not original_text and not attachments:
                 state["last_msg_id"] = original_msg_id
-                save_state(state) # שמירה רציפה למניעת כפילויות
+                if original_msg_id not in state['processed_ids']:
+                    state['processed_ids'].append(original_msg_id)
+                save_state(state) 
                 continue
 
             new_text = f"*{sender_name}:*\n{original_text}" if original_text else f"*{sender_name}:*"
@@ -186,7 +197,9 @@ def sync_new_messages(service, creds, source_space, target_space):
                 else:
                     print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר.")
                     state["last_msg_id"] = original_msg_id
-                    save_state(state) # שמירה רציפה
+                    if original_msg_id not in state['processed_ids']:
+                        state['processed_ids'].append(original_msg_id)
+                    save_state(state) 
                     continue 
 
             created_message = None
@@ -247,16 +260,19 @@ def sync_new_messages(service, creds, source_space, target_space):
                 if new_thread_id:
                     state['threads'][original_thread_id] = new_thread_id
             
-            # --- שמירת הזיכרון אחרי כל העתקה מוצלחת כדי למנוע כפילויות ---
+            # --- עדכון הזיכרון לאחר העתקה מוצלחת ---
             state["last_msg_id"] = original_msg_id
-            save_state(state)
+            if original_msg_id not in state['processed_ids']:
+                state['processed_ids'].append(original_msg_id)
+                
+            save_state(state) # שומר זמנית על הדיסק, ה-yml ידחוף את זה לשרת
             
-            # --- השהיה של 2 שניות למניעת עומס (שגיאת 429) ---
             time.sleep(2)
                     
         except Exception as e:
             print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
             continue
+
     print("הסנכרון הסתיים בהצלחה.")
 
 if __name__ == '__main__':
