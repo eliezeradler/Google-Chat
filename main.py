@@ -261,6 +261,11 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 current_body['attachment'] = [{'attachmentDataRef': attachment_data_ref}]
                                 
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                            
+                            # === תוספת ההשהיה לשחרור עומס מגוגל ===
+                            print(f" > קובץ ({file_name}) טופל בהצלחה. ממתין 3 שניות לשחרור עומס (מניעת שגיאת 429)...")
+                            time.sleep(3)
+                            
                         except Exception as e:
                             print(f" > שגיאה בהעלאת מדיה למרחב היעד: {e}")
                             current_body['text'] += f"\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ ({file_name}) להודעה]*"
