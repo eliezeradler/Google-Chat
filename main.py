@@ -228,7 +228,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                     api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                 
                 created_message = service.spaces().messages().create(**api_kwargs).execute()
-           else:
+            else:
                 for i, attachment_info in enumerate(attachments):
                     file_stream, mime_type = download_attachment(attachment_info, service, creds)
                     
