@@ -228,7 +228,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                     api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                 
                 created_message = service.spaces().messages().create(**api_kwargs).execute()
-            else:
+           else:
                 for i, attachment_info in enumerate(attachments):
                     file_stream, mime_type = download_attachment(attachment_info, service, creds)
                     
@@ -246,28 +246,44 @@ def sync_new_messages(service, creds, source_space, target_space):
                         api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                     
                     if file_stream:
-                        media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
                         file_name = attachment_info.get('contentName', 'attachment_file')
+                        upload_res = None
                         
-                        try:
-                            upload_res = service.media().upload(
-                                parent=target_space,
-                                body={'filename': file_name},
-                                media_body=media_upload
-                            ).execute()
-                            
+                        # === מנגנון ניסיון חוזר חכם (Retry) לטיפול בחסימות עומס (429) ===
+                        for attempt in range(3): # מנסה עד 3 פעמים
+                            try:
+                                file_stream.seek(0) # מאפס את הקריאה של הקובץ להתחלה לפני כל ניסיון
+                                media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
+                                
+                                upload_res = service.media().upload(
+                                    parent=target_space,
+                                    body={'filename': file_name},
+                                    media_body=media_upload
+                                ).execute()
+                                break # אם הצליח, יוצא מהלולאה וממשיך הלאה
+                                
+                            except Exception as e:
+                                if '429' in str(e) and attempt < 2:
+                                    wait_time = 15 # ממתין 15 שניות לפני הניסיון הבא
+                                    print(f" > עומס רגעי (429) בהעלאת {file_name}. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 2}/3)...")
+                                    time.sleep(wait_time)
+                                else:
+                                    print(f" > שגיאה סופית בהעלאת מדיה למרחב היעד: {e}")
+                                    break # אם זו לא שגיאת עומס, או שנגמרו הניסיונות, מוותר
+                        # ==========================================================
+
+                        if upload_res:
                             attachment_data_ref = upload_res.get('attachmentDataRef')
                             if attachment_data_ref:
                                 current_body['attachment'] = [{'attachmentDataRef': attachment_data_ref}]
-                                
-                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
                             
-                            # === תוספת ההשהיה לשחרור עומס מגוגל ===
-                            print(f" > קובץ ({file_name}) טופל בהצלחה. ממתין 3 שניות לשחרור עומס (מניעת שגיאת 429)...")
-                            time.sleep(3)
-                            
-                        except Exception as e:
-                            print(f" > שגיאה בהעלאת מדיה למרחב היעד: {e}")
+                            try:
+                                msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                                print(f" > קובץ ({file_name}) טופל בהצלחה. ממתין 3 שניות לשחרור עומס...")
+                                time.sleep(3)
+                            except Exception as e:
+                                print(f" > שגיאה בשליחת ההודעה לאחר העלאת המדיה: {e}")
+                        else:
                             current_body['text'] += f"\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ ({file_name}) להודעה]*"
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
                     else:
