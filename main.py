@@ -73,19 +73,16 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
-            # מוודא שרשימת המזהים קיימת למקרה שזה קובץ ישן
             if "processed_ids" not in state: 
                 state["processed_ids"] = []
             return state
     return {"last_msg_id": None, "threads": {}, "processed_ids": []}
 
 def save_state(state):
-    # שומר רק 200 שרשורים כדי שהקובץ לא יתנפח
     if len(state.get('threads', {})) > 200:
         keys_to_keep = list(state['threads'].keys())[-200:]
         state['threads'] = {k: state['threads'][k] for k in keys_to_keep}
         
-    # זוכר רק את 500 ההודעות האחרונות למניעת כפילויות עתידיות
     state['processed_ids'] = state.get('processed_ids', [])[-500:]
         
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
@@ -129,8 +126,6 @@ def sync_new_messages(service, creds, source_space, target_space):
             original_msg_id = original_msg.get('name', '')
             original_text = original_msg.get('text', '')
             
-            # === חסימת כפילויות קשיחה ===
-            # אם המזהה של ההודעה כבר נמצא ברשימת הזיכרון, מדלגים עליה מיד
             if original_msg_id in state.get('processed_ids', []):
                 print(f"דילוג: הודעה {original_msg_id} כבר הועתקה בעבר.")
                 continue
@@ -191,14 +186,12 @@ def sync_new_messages(service, creds, source_space, target_space):
                             if not sender_name:
                                 sender_name = f"מזהה: {user_id}"
                         except Exception as e:
-                            print(f" > שגיאה במשיכת פרטי חבר מרחב ({raw_name}): {e}")
                             sender_name = f"מזהה: {raw_name.split('/')[-1]}"
-                else:
-                    sender_name = 'משתמש לא ידוע'
+            else:
+                sender_name = 'משתמש לא ידוע'
 
             attachments = original_msg.get('attachment', [])
             
-            # אם אין טקסט ואין קובץ, מתעדים שראינו כדי לא לחזור עליה
             if not original_text and not attachments:
                 state["last_msg_id"] = original_msg_id
                 if original_msg_id not in state['processed_ids']:
@@ -228,6 +221,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                     api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                 
                 created_message = service.spaces().messages().create(**api_kwargs).execute()
+                print(" > הודעת טקסט הועתקה בהצלחה.")
             else:
                 for i, attachment_info in enumerate(attachments):
                     file_stream, mime_type = download_attachment(attachment_info, service, creds)
@@ -249,10 +243,9 @@ def sync_new_messages(service, creds, source_space, target_space):
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         upload_res = None
                         
-                        # === מנגנון ניסיון חוזר חכם (Retry) לטיפול בחסימות עומס (429) ===
-                        for attempt in range(3): # מנסה עד 3 פעמים
+                        for attempt in range(3):
                             try:
-                                file_stream.seek(0) # מאפס את הקריאה של הקובץ להתחלה לפני כל ניסיון
+                                file_stream.seek(0)
                                 media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
                                 
                                 upload_res = service.media().upload(
@@ -260,17 +253,16 @@ def sync_new_messages(service, creds, source_space, target_space):
                                     body={'filename': file_name},
                                     media_body=media_upload
                                 ).execute()
-                                break # אם הצליח, יוצא מהלולאה וממשיך הלאה
+                                break
                                 
                             except Exception as e:
                                 if '429' in str(e) and attempt < 2:
-                                    wait_time = 15 # ממתין 15 שניות לפני הניסיון הבא
+                                    wait_time = 15
                                     print(f" > עומס רגעי (429) בהעלאת {file_name}. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 2}/3)...")
                                     time.sleep(wait_time)
                                 else:
                                     print(f" > שגיאה סופית בהעלאת מדיה למרחב היעד: {e}")
-                                    break # אם זו לא שגיאת עומס, או שנגמרו הניסיונות, מוותר
-                        # ==========================================================
+                                    break
 
                         if upload_res:
                             attachment_data_ref = upload_res.get('attachmentDataRef')
@@ -299,14 +291,11 @@ def sync_new_messages(service, creds, source_space, target_space):
                 if new_thread_id:
                     state['threads'][original_thread_id] = new_thread_id
             
-            # --- עדכון הזיכרון לאחר העתקה מוצלחת ---
             state["last_msg_id"] = original_msg_id
             if original_msg_id not in state['processed_ids']:
                 state['processed_ids'].append(original_msg_id)
                 
-            save_state(state) # שומר זמנית על הדיסק, ה-yml ידחוף את זה לשרת
-            
-            time.sleep(2)
+            save_state(state)
                     
         except Exception as e:
             print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
