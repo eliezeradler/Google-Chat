@@ -248,6 +248,9 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 file_stream.seek(0)
                                 media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
                                 
+                                # מניעת התפרצות מראש: ממתין 2 שניות לפני כל פקודת העלאה
+                                time.sleep(2)
+                                
                                 upload_res = service.media().upload(
                                     parent=target_space,
                                     body={'filename': file_name},
@@ -257,7 +260,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 
                             except Exception as e:
                                 if '429' in str(e) and attempt < 2:
-                                    wait_time = 15
+                                    wait_time = 60 # הוגדל לדקה שלמה כדי להבטיח שחרור של השרת
                                     print(f" > עומס רגעי (429) בהעלאת {file_name}. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 2}/3)...")
                                     time.sleep(wait_time)
                                 else:
