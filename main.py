@@ -12,7 +12,6 @@ SCOPES = [
     'https://www.googleapis.com/auth/chat.spaces.readonly',
     'https://www.googleapis.com/auth/chat.memberships.readonly'
 ]
-STATE_FILE = 'sync_data.json'
 
 def authenticate_google_chat():
     token_info = json.loads(os.environ['GCP_TOKEN'])
@@ -69,37 +68,47 @@ def get_all_messages(service, space_name):
         print(f"שגיאה במשיכת הודעות: {e}")
         return []
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+def get_state_file(target_space):
+    # שומר על קובץ הזיכרון הישן עבור הזוג המקורי כדי לא להעתיק כפילויות
+    if target_space == 'spaces/AAQAq5S0W9Q':
+        return 'sync_data.json'
+    # יוצר קובץ זיכרון ייעודי לכל מרחב יעד חדש
+    target_id = target_space.split('/')[-1]
+    return f'sync_data_{target_id}.json'
+
+def load_state(target_space):
+    state_file = get_state_file(target_space)
+    if os.path.exists(state_file):
+        with open(state_file, 'r', encoding='utf-8') as f:
             state = json.load(f)
             if "processed_ids" not in state: 
                 state["processed_ids"] = []
             return state
     return {"last_msg_id": None, "threads": {}, "processed_ids": []}
 
-def save_state(state):
+def save_state(state, target_space):
+    state_file = get_state_file(target_space)
     if len(state.get('threads', {})) > 200:
         keys_to_keep = list(state['threads'].keys())[-200:]
         state['threads'] = {k: state['threads'][k] for k in keys_to_keep}
         
     state['processed_ids'] = state.get('processed_ids', [])[-500:]
         
-    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+    with open(state_file, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 def sync_new_messages(service, creds, source_space, target_space):
     messages = get_all_messages(service, source_space)
     if not messages:
-        print("לא נמצאו הודעות במרחב המקור.")
+        print(f"לא נמצאו הודעות במרחב המקור {source_space}.")
         return
 
-    state = load_state()
+    state = load_state(target_space)
     last_id = state.get("last_msg_id")
 
     if not last_id:
         state["last_msg_id"] = messages[-1]['name']
-        save_state(state)
+        save_state(state, target_space)
         print("ריצת אתחול: נשמר המזהה האחרון. ההעתקה תתחיל בפועל מהריצה הבאה.")
         return
 
@@ -196,7 +205,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                 state["last_msg_id"] = original_msg_id
                 if original_msg_id not in state['processed_ids']:
                     state['processed_ids'].append(original_msg_id)
-                save_state(state) 
+                save_state(state, target_space) 
                 continue
 
             new_text = f"*{sender_name}:*\n{original_text}" if original_text else f"*{sender_name}:*"
@@ -210,7 +219,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                     state["last_msg_id"] = original_msg_id
                     if original_msg_id not in state['processed_ids']:
                         state['processed_ids'].append(original_msg_id)
-                    save_state(state) 
+                    save_state(state, target_space) 
                     continue 
 
             created_message = None
@@ -248,7 +257,6 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 file_stream.seek(0)
                                 media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
                                 
-                                # מניעת התפרצות מראש: ממתין 2 שניות לפני כל פקודת העלאה
                                 time.sleep(2)
                                 
                                 upload_res = service.media().upload(
@@ -260,7 +268,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 
                             except Exception as e:
                                 if '429' in str(e) and attempt < 2:
-                                    wait_time = 60 # הוגדל לדקה שלמה כדי להבטיח שחרור של השרת
+                                    wait_time = 60
                                     print(f" > עומס רגעי (429) בהעלאת {file_name}. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 2}/3)...")
                                     time.sleep(wait_time)
                                 else:
@@ -298,17 +306,25 @@ def sync_new_messages(service, creds, source_space, target_space):
             if original_msg_id not in state['processed_ids']:
                 state['processed_ids'].append(original_msg_id)
                 
-            save_state(state)
+            save_state(state, target_space)
                     
         except Exception as e:
             print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
             continue
 
-    print("הסנכרון הסתיים בהצלחה.")
+    print(f"הסנכרון מ-{source_space} הסתיים בהצלחה.\n")
 
 if __name__ == '__main__':
-    SOURCE_SPACE = 'spaces/AAQArWIpnWI'
-    TARGET_SPACE = 'spaces/AAQAq5S0W9Q'
+    # רשימת זוגות הקבוצות לסנכרון (מקור -> יעד)
+    SPACE_PAIRS = [
+        ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q'), # הזוג המקורי
+        ('spaces/AAQA6TXPw-g', 'spaces/AAQACMVYKrk'), # הזוג החדש הראשון
+        ('spaces/AAQA4FmQDkc', 'spaces/AAQArtcCJH0')  # הזוג החדש השני
+    ]
     
     chat_service, creds = authenticate_google_chat()
-    sync_new_messages(chat_service, creds, SOURCE_SPACE, TARGET_SPACE)
+    
+    # לולאה שעוברת על כל הזוגות ומריצה את הסנכרון
+    for source, target in SPACE_PAIRS:
+        print(f"--- מתחיל סנכרון: {source} >>> {target} ---")
+        sync_new_messages(chat_service, creds, source, target)
