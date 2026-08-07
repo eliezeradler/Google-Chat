@@ -319,7 +319,9 @@ if __name__ == '__main__':
     SPACE_PAIRS = [
         ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q'), # הזוג המקורי
         ('spaces/AAQA6TXPw-g', 'spaces/AAQACMVYKrk'), # הזוג החדש הראשון
-        ('spaces/AAQA4FmQDkc', 'spaces/AAQArtcCJH0')  # הזוג החדש השני
+        ('spaces/AAQA4FmQDkc', 'spaces/AAQArtcCJH0'),  # הזוג החדש השני
+        ('spaces/AAQAW4OH4YE', 'spaces/AAQAOS_WMkw'),
+        ('spaces/AAQACUY6t3I', 'spaces/AAQAWW6csTw'),
     ]
     
     chat_service, creds = authenticate_google_chat()
