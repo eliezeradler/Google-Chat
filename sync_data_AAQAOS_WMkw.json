@@ -1,5 +1,9 @@
 {
-  "last_msg_id": "spaces/AAQAW4OH4YE/messages/HRW5xWreHjE.HRW5xWreHjE",
-  "threads": {},
-  "processed_ids": []
+  "last_msg_id": "spaces/AAQAW4OH4YE/messages/AH7irHg5DnY.AH7irHg5DnY",
+  "threads": {
+    "spaces/AAQAW4OH4YE/threads/AH7irHg5DnY": "spaces/AAQAOS_WMkw/threads/P9VC1K3tQ1Y"
+  },
+  "processed_ids": [
+    "spaces/AAQAW4OH4YE/messages/AH7irHg5DnY.AH7irHg5DnY"
+  ]
 }
