@@ -10,15 +10,15 @@ concurrency:
 jobs:
   sync-messages:
     runs-on: ubuntu-latest
-    timeout-minutes: 10 # מוארך קצת למקרה של עשרות הודעות
+    timeout-minutes: 30 # זמן מוארך ל-30 דקות למקרה של עומס רב
     permissions:
-      contents: write # חובה כדי לשמור את קובץ הזיכרון
+      contents: write 
       
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: main # מבטיח משיכה של הענף המעודכן ביותר בכל תחילת ריצה
+          ref: main 
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,22 +34,15 @@ jobs:
         env:
           GCP_TOKEN: ${{ secrets.GCP_TOKEN }}
         run: |
-          git pull origin main # מסנכרן את קובץ הזיכרון מהשרת רגע לפני הריצה
+          git pull origin main 
           python main.py
 
       - name: Save Memory File (Commit)
+        if: always() # <- פקודת ההצלה! מבטיחה שהקובץ יישמר גם אם הריצה מבוטלת
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-          
-          # 1. מוסיפים את כל קבצי הזיכרון המעודכנים (של כל הקבוצות)
           git add sync_data*.json
-          
-          # 2. שומרים אותם מקומית. הוספנו '|| true' כדי שהסקריפט לא יקרוס אם אין שינויים
           git commit -m "Update state and thread mapping" || true
-          
-          # 3. עכשיו כש"השולחן נקי", אפשר למשוך עדכונים מהשרת בבטחה
-          git pull --rebase origin main
-          
-          # 4. ולבסוף לדחוף הכל חזרה ל-GitHub בצורה פיזית
+          git pull --rebase origin main || true
           git push
