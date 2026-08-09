@@ -69,10 +69,8 @@ def get_all_messages(service, space_name):
         return []
 
 def get_state_file(target_space):
-    # שומר על קובץ הזיכרון הישן עבור הזוג המקורי כדי לא להעתיק כפילויות
     if target_space == 'spaces/AAQAq5S0W9Q':
         return 'sync_data.json'
-    # יוצר קובץ זיכרון ייעודי לכל מרחב יעד חדש
     target_id = target_space.split('/')[-1]
     return f'sync_data_{target_id}.json'
 
@@ -268,7 +266,8 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 
                             except Exception as e:
                                 if '429' in str(e) and attempt < 2:
-                                    wait_time = 60
+                                    # מנגנון ההשהיה הדינמי: 60 שניות למרחב הכבד, 15 שניות לשאר
+                                    wait_time = 60 if target_space == 'spaces/AAQAq5S0W9Q' else 15
                                     print(f" > עומס רגעי (429) בהעלאת {file_name}. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 2}/3)...")
                                     time.sleep(wait_time)
                                 else:
@@ -315,13 +314,18 @@ def sync_new_messages(service, creds, source_space, target_space):
     print(f"הסנכרון מ-{source_space} הסתיים בהצלחה.\n")
 
 if __name__ == '__main__':
-    # רשימת זוגות הקבוצות לסנכרון (מקור -> יעד)
+    # סידור אופטימלי: קלים קודם, כבד בסוף
     SPACE_PAIRS = [
-        ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q'), # הזוג המקורי
-        ('spaces/AAQA6TXPw-g', 'spaces/AAQACMVYKrk'), # הזוג החדש הראשון
-        ('spaces/AAQA4FmQDkc', 'spaces/AAQArtcCJH0'),  # הזוג החדש השני
+        # 1. קלים בלי קבצים (ירוצו בשניות)
+        ('spaces/AAQA4FmQDkc', 'spaces/AAQArtcCJH0'),
+        ('spaces/AAQA6TXPw-g', 'spaces/AAQACMVYKrk'),
+        
+        # 2. בינוניים עם קבצים מדי פעם
         ('spaces/AAQAW4OH4YE', 'spaces/AAQAOS_WMkw'),
         ('spaces/AAQACUY6t3I', 'spaces/AAQAWW6csTw'),
+        
+        # 3. הכבד - תמיד ממוקם אחרון!
+        ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q')
     ]
     
     chat_service, creds = authenticate_google_chat()
