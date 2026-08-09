@@ -29,19 +29,24 @@ def download_attachment(attachment, service, creds):
     if resource_name:
         media_url = f"https://chat.googleapis.com/v1/media/{resource_name}?alt=media"
         try:
-            response = requests.get(media_url, headers=headers)
+            # הוספנו timeout של 30 שניות כדי למנוע קפיאה
+            response = requests.get(media_url, headers=headers, timeout=30)
             if response.status_code == 200:
                 print(f" > מדיה ירדה בהצלחה דרך API ישיר ({resource_name})")
                 return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
             else:
                 print(f" > שגיאה בהורדת מדיה דרך API. סטטוס: {response.status_code}")
         except Exception as e:
-            print(f" > שגיאת תקשורת בהורדה דרך API ישיר: {e}")
+            print(f" > שגיאת תקשורת בהורדה דרך API ישיר (ייתכן פסק זמן): {e}")
 
     elif download_uri:
-        response = requests.get(download_uri, headers=headers)
-        if response.status_code == 200:
-            return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
+        try:
+            # הוספנו timeout גם כאן + עטיפת שגיאות
+            response = requests.get(download_uri, headers=headers, timeout=30)
+            if response.status_code == 200:
+                return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
+        except Exception as e:
+            print(f" > שגיאת תקשורת בהורדה מקישור: {e}")
             
     print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף (לא דרך API ולא דרך קישור).")
     return None, None
@@ -266,7 +271,6 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 
                             except Exception as e:
                                 if '429' in str(e) and attempt < 2:
-                                    # מנגנון ההשהיה הדינמי: 60 שניות למרחב הכבד, 15 שניות לשאר
                                     wait_time = 60 if target_space == 'spaces/AAQAq5S0W9Q' else 15
                                     print(f" > עומס רגעי (429) בהעלאת {file_name}. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 2}/3)...")
                                     time.sleep(wait_time)
@@ -314,23 +318,16 @@ def sync_new_messages(service, creds, source_space, target_space):
     print(f"הסנכרון מ-{source_space} הסתיים בהצלחה.\n")
 
 if __name__ == '__main__':
-    # סידור אופטימלי: קלים קודם, כבד בסוף
     SPACE_PAIRS = [
-        # 1. קלים בלי קבצים (ירוצו בשניות)
         ('spaces/AAQA4FmQDkc', 'spaces/AAQArtcCJH0'),
         ('spaces/AAQA6TXPw-g', 'spaces/AAQACMVYKrk'),
-        
-        # 2. בינוניים עם קבצים מדי פעם
         ('spaces/AAQAW4OH4YE', 'spaces/AAQAOS_WMkw'),
         ('spaces/AAQACUY6t3I', 'spaces/AAQAWW6csTw'),
-        
-        # 3. הכבד - תמיד ממוקם אחרון!
         ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q')
     ]
     
     chat_service, creds = authenticate_google_chat()
     
-    # לולאה שעוברת על כל הזוגות ומריצה את הסנכרון
     for source, target in SPACE_PAIRS:
         print(f"--- מתחיל סנכרון: {source} >>> {target} ---")
         sync_new_messages(chat_service, creds, source, target)
