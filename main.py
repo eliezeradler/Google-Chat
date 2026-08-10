@@ -250,20 +250,16 @@ def sync_new_messages(service, creds, source_space, target_space):
                     api_kwargs = {'parent': target_space, 'body': current_body}
                     if 'thread' in current_body:
                         api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
-                    
                     if file_stream:
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         upload_res = None
                         
-                        last_error_msg = "שגיאה לא ידועה" # משתנה חדש לשמירת השגיאה האמיתית
+                        last_error_msg = "שגיאה לא ידועה" # משתנה לשמירת השגיאה האמיתית
                         
                         for attempt in range(3):
                             try:
                                 file_stream.seek(0)
                                 media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
-                                
-                                # פתרון ל-429: מרווח נשימה של 2 שניות כדי לא לשבור את המכסה הדקתית
-                                time.sleep(2) 
                                 
                                 upload_res = service.media().upload(
                                     parent=target_space,
@@ -292,14 +288,20 @@ def sync_new_messages(service, creds, source_space, target_space):
                         else:
                             # הזרקת השגיאה המדויקת היישר אל תוך טקסט ההודעה בצ'אט
                             current_body['text'] += f"\n*[מערכת: קובץ ({file_name}) לא צורף. סיבה: {last_error_msg}]*"
-                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
-                        else:
-                            current_body['text'] += f"\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ ({file_name}) להודעה]*"
-                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                            try:
+                                msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                            except Exception as e:
+                                print(f" > שגיאה בשליחת הודעת השגיאה: {e}")
                     else:
                         if not drive_id:
                             current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להוריד ממרחב המקור]*"
-                        msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                        try:
+                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                        except Exception as e:
+                            print(f" > שגיאה בשליחת הודעת שגיאת הורדה: {e}")
+                        
+                    if i == 0:
+                        created_message = msg_res
                         
                     if i == 0:
                         created_message = msg_res
