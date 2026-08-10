@@ -28,27 +28,37 @@ def download_attachment(attachment, service, creds):
     
     if resource_name:
         media_url = f"https://chat.googleapis.com/v1/media/{resource_name}?alt=media"
-        try:
-            # הוספנו timeout של 30 שניות כדי למנוע קפיאה
-            response = requests.get(media_url, headers=headers, timeout=30)
-            if response.status_code == 200:
-                print(f" > מדיה ירדה בהצלחה דרך API ישיר ({resource_name})")
-                return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
-            else:
-                print(f" > שגיאה בהורדת מדיה דרך API. סטטוס: {response.status_code}")
-        except Exception as e:
-            print(f" > שגיאת תקשורת בהורדה דרך API ישיר (ייתכן פסק זמן): {e}")
+        for attempt in range(3):
+            try:
+                response = requests.get(media_url, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    print(f" > מדיה ירדה בהצלחה דרך API ישיר ({resource_name})")
+                    return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
+                elif response.status_code == 429:
+                    print(f" > עומס קריאה (429) בהורדה. ממתין 10 שניות...")
+                    time.sleep(10)
+                else:
+                    break
+            except Exception as e:
+                print(f" > שגיאת תקשורת בהורדה: {e}")
+                time.sleep(5)
 
     elif download_uri:
-        try:
-            # הוספנו timeout גם כאן + עטיפת שגיאות
-            response = requests.get(download_uri, headers=headers, timeout=30)
-            if response.status_code == 200:
-                return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
-        except Exception as e:
-            print(f" > שגיאת תקשורת בהורדה מקישור: {e}")
+        for attempt in range(3):
+            try:
+                response = requests.get(download_uri, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
+                elif response.status_code == 429:
+                    print(f" > עומס קריאה (429) מקישור. ממתין 10 שניות...")
+                    time.sleep(10)
+                else:
+                    break
+            except Exception as e:
+                print(f" > שגיאת תקשורת מקישור: {e}")
+                time.sleep(5)
             
-    print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף (לא דרך API ולא דרך קישור).")
+    print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף.")
     return None, None
 
 def get_all_messages(service, space_name):
@@ -68,6 +78,7 @@ def get_all_messages(service, space_name):
             page_token = results.get('nextPageToken')
             if not page_token:
                 break
+                
         return messages
     except Exception as e:
         print(f"שגיאה במשיכת הודעות: {e}")
@@ -102,6 +113,7 @@ def save_state(state, target_space):
 
 def sync_new_messages(service, creds, source_space, target_space):
     messages = get_all_messages(service, source_space)
+    
     if not messages:
         print(f"לא נמצאו הודעות במרחב המקור {source_space}.")
         return
@@ -132,6 +144,8 @@ def sync_new_messages(service, creds, source_space, target_space):
         return
 
     print(f"נמצאו {len(new_messages)} הודעות חדשות. מתחיל העתקה...")
+
+    dynamic_known_users = {}
 
     for original_msg in new_messages:
         try:
@@ -181,11 +195,14 @@ def sync_new_messages(service, creds, source_space, target_space):
                         "users/103092947269637100183": "אלעזר",
                         "users/115022370288768837848": "שלמה וי",
                         "users/108727139455424835546": "Haim Furman",
-                        "users/112628871561495302517": "Shloimy Getter"
+                        "users/112628871561495302517": "Shloimy Getter",
+                        "users/114022495153014004089": "יצחק כהן",
                     }
                     
                     if raw_name in known_users:
                         sender_name = known_users[raw_name]
+                    elif raw_name in dynamic_known_users:
+                        sender_name = dynamic_known_users[raw_name]
                     else:
                         try:
                             user_id = raw_name.split('/')[-1]
@@ -197,6 +214,8 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 sender_name = user_data.get('email')
                             if not sender_name:
                                 sender_name = f"מזהה: {user_id}"
+                            
+                            dynamic_known_users[raw_name] = sender_name
                         except Exception as e:
                             sender_name = f"מזהה: {raw_name.split('/')[-1]}"
             else:
@@ -250,13 +269,15 @@ def sync_new_messages(service, creds, source_space, target_space):
                     api_kwargs = {'parent': target_space, 'body': current_body}
                     if 'thread' in current_body:
                         api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+                    
                     if file_stream:
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         upload_res = None
                         
-                        last_error_msg = "שגיאה לא ידועה" # משתנה לשמירת השגיאה האמיתית
+                        last_error_msg = "שגיאה לא ידועה"
                         
-                        for attempt in range(3):
+                        # ההשהיה המעריכית המעודכנת ל-429 (הגדלנו ל-5 ניסיונות)
+                        for attempt in range(5): 
                             try:
                                 file_stream.seek(0)
                                 media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
@@ -266,13 +287,15 @@ def sync_new_messages(service, creds, source_space, target_space):
                                     body={'filename': file_name},
                                     media_body=media_upload
                                 ).execute()
-                                break
+                                break 
                                 
                             except Exception as e:
-                                last_error_msg = str(e) # לוכדים את השגיאה של גוגל
-                                if '429' in str(e) and attempt < 2:
-                                    print(f" > עומס כתיבה (429). ממתין ומנסה שוב...")
-                                    time.sleep(15)
+                                last_error_msg = str(e) # שמירת השגיאה להדפסה בצ'אט במידת הצורך
+                                if '429' in str(e) and attempt < 4:
+                                    # מנגנון השהיה מעריכית: 5 -> 10 -> 20 -> 40 שניות
+                                    wait_time = 5 * (2 ** attempt)
+                                    print(f" > עומס כתיבה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                                    time.sleep(wait_time)
                                 else:
                                     break
 
@@ -283,6 +306,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                             
                             try:
                                 msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                                print(f" > קובץ ({file_name}) טופל בהצלחה.")
                             except Exception as e:
                                 print(f" > שגיאה בשליחת ההודעה: {e}")
                         else:
@@ -299,9 +323,6 @@ def sync_new_messages(service, creds, source_space, target_space):
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
                         except Exception as e:
                             print(f" > שגיאה בשליחת הודעת שגיאת הורדה: {e}")
-                        
-                    if i == 0:
-                        created_message = msg_res
                         
                     if i == 0:
                         created_message = msg_res
@@ -328,7 +349,7 @@ if __name__ == '__main__':
         ('spaces/AAQA6TXPw-g', 'spaces/AAQACMVYKrk'),
         ('spaces/AAQAW4OH4YE', 'spaces/AAQAOS_WMkw'),
         ('spaces/AAQACUY6t3I', 'spaces/AAQAWW6csTw'),
-        ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q'),
+        ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q')
     ]
     
     chat_service, creds = authenticate_google_chat()
