@@ -255,12 +255,15 @@ def sync_new_messages(service, creds, source_space, target_space):
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         upload_res = None
                         
+                        last_error_msg = "שגיאה לא ידועה" # משתנה חדש לשמירת השגיאה האמיתית
+                        
                         for attempt in range(3):
                             try:
                                 file_stream.seek(0)
                                 media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
                                 
-                                time.sleep(2)
+                                # פתרון ל-429: מרווח נשימה של 2 שניות כדי לא לשבור את המכסה הדקתית
+                                time.sleep(2) 
                                 
                                 upload_res = service.media().upload(
                                     parent=target_space,
@@ -270,12 +273,11 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 break
                                 
                             except Exception as e:
+                                last_error_msg = str(e) # לוכדים את השגיאה של גוגל
                                 if '429' in str(e) and attempt < 2:
-                                    wait_time = 60 if target_space == 'spaces/AAQAq5S0W9Q' else 15
-                                    print(f" > עומס רגעי (429) בהעלאת {file_name}. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 2}/3)...")
-                                    time.sleep(wait_time)
+                                    print(f" > עומס כתיבה (429). ממתין ומנסה שוב...")
+                                    time.sleep(15)
                                 else:
-                                    print(f" > שגיאה סופית בהעלאת מדיה למרחב היעד: {e}")
                                     break
 
                         if upload_res:
@@ -285,10 +287,12 @@ def sync_new_messages(service, creds, source_space, target_space):
                             
                             try:
                                 msg_res = service.spaces().messages().create(**api_kwargs).execute()
-                                print(f" > קובץ ({file_name}) טופל בהצלחה. ממתין 3 שניות לשחרור עומס...")
-                                time.sleep(3)
                             except Exception as e:
-                                print(f" > שגיאה בשליחת ההודעה לאחר העלאת המדיה: {e}")
+                                print(f" > שגיאה בשליחת ההודעה: {e}")
+                        else:
+                            # הזרקת השגיאה המדויקת היישר אל תוך טקסט ההודעה בצ'אט
+                            current_body['text'] += f"\n*[מערכת: קובץ ({file_name}) לא צורף. סיבה: {last_error_msg}]*"
+                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
                         else:
                             current_body['text'] += f"\n*[מערכת: התרחשה שגיאה במהלך צירוף הקובץ ({file_name}) להודעה]*"
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
