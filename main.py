@@ -349,7 +349,8 @@ if __name__ == '__main__':
         ('spaces/AAQA6TXPw-g', 'spaces/AAQACMVYKrk'),
         ('spaces/AAQAW4OH4YE', 'spaces/AAQAOS_WMkw'),
         ('spaces/AAQACUY6t3I', 'spaces/AAQAWW6csTw'),
-        ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q')
+        ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q'),
+        ('spaces/AAQAKJsiBR0', 'spaces/AAQA89OFw6A')
     ]
     
     chat_service, creds = authenticate_google_chat()
