@@ -3,6 +3,7 @@ import json
 import io
 import time
 import requests
+import random
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
@@ -251,6 +252,8 @@ def sync_new_messages(service, creds, source_space, target_space):
                 if 'thread' in msg_body:
                     api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                 
+                # עמידה במכסת מרחב של הודעה אחת לשנייה 
+                time.sleep(1.2)
                 created_message = service.spaces().messages().create(**api_kwargs).execute()
                 print(" > הודעת טקסט הועתקה בהצלחה.")
             else:
@@ -276,7 +279,6 @@ def sync_new_messages(service, creds, source_space, target_space):
                         
                         last_error_msg = "שגיאה לא ידועה"
                         
-                        # ההשהיה המעריכית המעודכנת ל-429 (הגדלנו ל-5 ניסיונות)
                         for attempt in range(5): 
                             try:
                                 file_stream.seek(0)
@@ -290,11 +292,15 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 break 
                                 
                             except Exception as e:
-                                last_error_msg = str(e) # שמירת השגיאה להדפסה בצ'אט במידת הצורך
+                                last_error_msg = str(e)
                                 if '429' in str(e) and attempt < 4:
-                                    # מנגנון השהיה מעריכית: 5 -> 10 -> 20 -> 40 שניות
-                                    wait_time = 5 * (2 ** attempt)
-                                    print(f" > עומס כתיבה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                                    # מנגנון השהיה מעריכית משולב Jitter לפי משוואת המכסות
+                                    base_delay = 2
+                                    max_wait = 60
+                                    jitter = random.uniform(0, 2)
+                                    wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
+                                    
+                                    print(f" > עומס כתיבה (429). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
                                     time.sleep(wait_time)
                                 else:
                                     break
@@ -305,14 +311,15 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 current_body['attachment'] = [{'attachmentDataRef': attachment_data_ref}]
                             
                             try:
+                                time.sleep(1.2) # השהיה למניעת חריגת קצב במרחב
                                 msg_res = service.spaces().messages().create(**api_kwargs).execute()
                                 print(f" > קובץ ({file_name}) טופל בהצלחה.")
                             except Exception as e:
                                 print(f" > שגיאה בשליחת ההודעה: {e}")
                         else:
-                            # הזרקת השגיאה המדויקת היישר אל תוך טקסט ההודעה בצ'אט
                             current_body['text'] += f"\n*[מערכת: קובץ ({file_name}) לא צורף. סיבה: {last_error_msg}]*"
                             try:
+                                time.sleep(1.2)
                                 msg_res = service.spaces().messages().create(**api_kwargs).execute()
                             except Exception as e:
                                 print(f" > שגיאה בשליחת הודעת השגיאה: {e}")
@@ -320,6 +327,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                         if not drive_id:
                             current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להוריד ממרחב המקור]*"
                         try:
+                            time.sleep(1.2)
                             msg_res = service.spaces().messages().create(**api_kwargs).execute()
                         except Exception as e:
                             print(f" > שגיאה בשליחת הודעת שגיאת הורדה: {e}")
