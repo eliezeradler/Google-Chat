@@ -14,6 +14,49 @@ SCOPES = [
     'https://www.googleapis.com/auth/chat.memberships.readonly'
 ]
 
+# --- קיצוב קצב + Retry גלובלי לכל כתיבה ל-Chat API ---
+# לפי התיעוד הרשמי (developers.google.com/workspace/chat/limits), למרחב (space)
+# יש מכסת "כתיבות לשנייה" של 1 בלבד, שחלה *ביחד* גם על media.upload (העלאת
+# קובץ) וגם על spaces.messages.create (יצירת הודעה). כלומר קובץ שהועלה
+# "צורך" את אותה שנייה שגם יצירת ההודעה הבאה צריכה - זו הסיבה המרכזית
+# לשגיאות 429 הרצופות על קבצי הווידאו. לכן כל קריאת כתיבה (העלאה או יצירת
+# הודעה) עוברת עכשיו דרך אותו "קוצב" משותף, ולא רק העלאת קבצים כמו קודם.
+MIN_WRITE_INTERVAL = 1.2  # שניות בין כתיבה לכתיבה - מעט מעל למכסה הרשמית של 1/שנייה
+_last_write_ts = 0.0
+
+def pace_write():
+    global _last_write_ts
+    now = time.time()
+    wait_needed = MIN_WRITE_INTERVAL - (now - _last_write_ts)
+    if wait_needed > 0:
+        time.sleep(wait_needed)
+    _last_write_ts = time.time()
+
+def call_with_backoff(func, label="", max_attempts=7, base_delay=3, max_wait=60):
+    """
+    מריץ קריאת כתיבה (יצירת הודעה / העלאת מדיה) עם:
+    1. קיצוב קצב גלובלי (pace_write) כנגד מכסת ה-1 כתיבות/שנייה המשותפת.
+    2. Exponential backoff + jitter על 429/503, לפי ההמלצה הרשמית של גוגל:
+       https://developers.google.com/workspace/chat/limits
+    מחזיר את התוצאה בהצלחה, או מעלה (raise) את השגיאה האחרונה אם כל הניסיונות נכשלו.
+    """
+    last_exc = None
+    for attempt in range(max_attempts):
+        pace_write()
+        try:
+            return func()
+        except Exception as e:
+            last_exc = e
+            msg = str(e)
+            if ('429' in msg or '503' in msg) and attempt < max_attempts - 1:
+                jitter = random.uniform(0, 1)
+                wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
+                print(f" > עומס/זמינות בכתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
+                time.sleep(wait_time)
+            else:
+                break
+    raise last_exc
+
 def authenticate_google_chat():
     token_info = json.loads(os.environ['GCP_TOKEN'])
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
@@ -67,11 +110,14 @@ def get_all_messages(service, space_name):
     page_token = None
     try:
         while True:
-            results = service.spaces().messages().list(
-                parent=space_name, 
-                pageSize=1000,
-                pageToken=page_token
-            ).execute()
+            results = call_with_backoff(
+                lambda: service.spaces().messages().list(
+                    parent=space_name,
+                    pageSize=1000,
+                    pageToken=page_token
+                ).execute(),
+                label="קריאת הודעות"
+            )
             
             if 'messages' in results:
                 messages.extend(results['messages'])
@@ -82,8 +128,8 @@ def get_all_messages(service, space_name):
                 
         return messages
     except Exception as e:
-        print(f"שגיאה במשיכת הודעות: {e}")
-        return []
+        print(f"שגיאה במשיכת הודעות (לאחר כל הניסיונות): {e}")
+        return None
 
 def get_state_file(target_space):
     if target_space == 'spaces/AAQAq5S0W9Q':
@@ -114,6 +160,10 @@ def save_state(state, target_space):
 
 def sync_new_messages(service, creds, source_space, target_space):
     messages = get_all_messages(service, source_space)
+    
+    if messages is None:
+        print(f"דילוג על {source_space} בריצה הזו עקב שגיאת תקשורת (ה-API לא הגיב כראוי). ינסה שוב בריצה הבאה.")
+        return
     
     if not messages:
         print(f"לא נמצאו הודעות במרחב המקור {source_space}.")
@@ -252,9 +302,10 @@ def sync_new_messages(service, creds, source_space, target_space):
                 if 'thread' in msg_body:
                     api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                 
-                # עמידה במכסת מרחב של הודעה אחת לשנייה 
-                time.sleep(1.2)
-                created_message = service.spaces().messages().create(**api_kwargs).execute()
+                created_message = call_with_backoff(
+                    lambda: service.spaces().messages().create(**api_kwargs).execute(),
+                    label="יצירת הודעת טקסט"
+                )
                 print(" > הודעת טקסט הועתקה בהצלחה.")
             else:
                 for i, attachment_info in enumerate(attachments):
@@ -263,6 +314,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                     current_body = msg_body.copy() if i == 0 else {'text': f"*(קובץ נוסף מ-{sender_name})*"}
                     if 'thread' in msg_body:
                         current_body['thread'] = msg_body['thread']
+                    msg_res = None
                     
                     drive_id = attachment_info.get('driveDataRef', {}).get('driveFileId')
                     if drive_id:
@@ -276,34 +328,25 @@ def sync_new_messages(service, creds, source_space, target_space):
                     if file_stream:
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         upload_res = None
-                        
                         last_error_msg = "שגיאה לא ידועה"
-                        
-                        for attempt in range(5): 
-                            try:
-                                file_stream.seek(0)
-                                media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
-                                
-                                upload_res = service.media().upload(
-                                    parent=target_space,
-                                    body={'filename': file_name},
-                                    media_body=media_upload
-                                ).execute()
-                                break 
-                                
-                            except Exception as e:
-                                last_error_msg = str(e)
-                                if '429' in str(e) and attempt < 4:
-                                    # מנגנון השהיה מעריכית משולב Jitter לפי משוואת המכסות
-                                    base_delay = 2
-                                    max_wait = 60
-                                    jitter = random.uniform(0, 2)
-                                    wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
-                                    
-                                    print(f" > עומס כתיבה (429). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
-                                    time.sleep(wait_time)
-                                else:
-                                    break
+
+                        def _do_upload():
+                            file_stream.seek(0)
+                            media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
+                            return service.media().upload(
+                                parent=target_space,
+                                body={'filename': file_name},
+                                media_body=media_upload
+                            ).execute()
+
+                        try:
+                            upload_res = call_with_backoff(_do_upload, label=f"העלאת קובץ {file_name}")
+                        except Exception as e:
+                            last_error_msg = str(e)
+                            upload_res = None
+                            if '429' in last_error_msg or '503' in last_error_msg:
+                                print(" > כל 7 הניסיונות נכשלו על רקע מכסה - השהיה נוספת של 20 שניות לפני שממשיכים, כדי לתת למכסה להתאפס.")
+                                time.sleep(20)
 
                         if upload_res:
                             attachment_data_ref = upload_res.get('attachmentDataRef')
@@ -311,26 +354,32 @@ def sync_new_messages(service, creds, source_space, target_space):
                                 current_body['attachment'] = [{'attachmentDataRef': attachment_data_ref}]
                             
                             try:
-                                time.sleep(1.2) # השהיה למניעת חריגת קצב במרחב
-                                msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                                msg_res = call_with_backoff(
+                                    lambda: service.spaces().messages().create(**api_kwargs).execute(),
+                                    label="יצירת הודעה עם קובץ"
+                                )
                                 print(f" > קובץ ({file_name}) טופל בהצלחה.")
                             except Exception as e:
-                                print(f" > שגיאה בשליחת ההודעה: {e}")
+                                print(f" > שגיאה בשליחת ההודעה (לאחר כל הניסיונות): {e}")
                         else:
                             current_body['text'] += f"\n*[מערכת: קובץ ({file_name}) לא צורף. סיבה: {last_error_msg}]*"
                             try:
-                                time.sleep(1.2)
-                                msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                                msg_res = call_with_backoff(
+                                    lambda: service.spaces().messages().create(**api_kwargs).execute(),
+                                    label="יצירת הודעת שגיאה"
+                                )
                             except Exception as e:
-                                print(f" > שגיאה בשליחת הודעת השגיאה: {e}")
+                                print(f" > שגיאה בשליחת הודעת השגיאה (לאחר כל הניסיונות): {e}")
                     else:
                         if not drive_id:
                             current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להוריד ממרחב המקור]*"
                         try:
-                            time.sleep(1.2)
-                            msg_res = service.spaces().messages().create(**api_kwargs).execute()
+                            msg_res = call_with_backoff(
+                                lambda: service.spaces().messages().create(**api_kwargs).execute(),
+                                label="יצירת הודעת שגיאת הורדה"
+                            )
                         except Exception as e:
-                            print(f" > שגיאה בשליחת הודעת שגיאת הורדה: {e}")
+                            print(f" > שגיאה בשליחת הודעת שגיאת הורדה (לאחר כל הניסיונות): {e}")
                         
                     if i == 0:
                         created_message = msg_res
