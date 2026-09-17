@@ -1,7 +1,7 @@
 name: Run Chat Copier Sync
 
 on:
-  #workflow_dispatch: # מאפשר הרצה ידנית או דרך API/Cron חיצוני
+  workflow_dispatch: # מאפשר הרצה ידנית או דרך API/Cron חיצוני
 
 concurrency:
   group: chat-copier-sync
