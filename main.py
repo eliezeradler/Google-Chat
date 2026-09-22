@@ -4,10 +4,6 @@ import io
 import time
 import requests
 import random
-# מנגנון השהיה יזומה עד לאיפוס המכסה היומית של גוגל מחר (19 בספטמבר)
-if datetime.date.today() < datetime.date(2026, 9, 19):
-    print("המערכת בהשהיה יזומה עד למחר כדי לאפס מכסות. הסקריפט מסיים מיד וללא שגיאה.")
-    sys.exit(0)
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
