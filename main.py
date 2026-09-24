@@ -14,14 +14,10 @@ SCOPES = [
     'https://www.googleapis.com/auth/chat.memberships.readonly'
 ]
 
+USERS_FILE = 'users.json'
+
 # --- קיצוב קצב + Retry גלובלי לכל כתיבה ל-Chat API ---
-# לפי התיעוד הרשמי (developers.google.com/workspace/chat/limits), למרחב (space)
-# יש מכסת "כתיבות לשנייה" של 1 בלבד, שחלה *ביחד* גם על media.upload (העלאת
-# קובץ) וגם על spaces.messages.create (יצירת הודעה). כלומר קובץ שהועלה
-# "צורך" את אותה שנייה שגם יצירת ההודעה הבאה צריכה - זו הסיבה המרכזית
-# לשגיאות 429 הרצופות על קבצי הווידאו. לכן כל קריאת כתיבה (העלאה או יצירת
-# הודעה) עוברת עכשיו דרך אותו "קוצב" משותף, ולא רק העלאת קבצים כמו קודם.
-MIN_WRITE_INTERVAL = 1.2  # שניות בין כתיבה לכתיבה - מעט מעל למכסה הרשמית של 1/שנייה
+MIN_WRITE_INTERVAL = 1.2
 _last_write_ts = 0.0
 
 def pace_write():
@@ -33,13 +29,6 @@ def pace_write():
     _last_write_ts = time.time()
 
 def call_with_backoff(func, label="", max_attempts=7, base_delay=3, max_wait=60):
-    """
-    מריץ קריאת כתיבה (יצירת הודעה / העלאת מדיה) עם:
-    1. קיצוב קצב גלובלי (pace_write) כנגד מכסת ה-1 כתיבות/שנייה המשותפת.
-    2. Exponential backoff + jitter על 429/503, לפי ההמלצה הרשמית של גוגל:
-       https://developers.google.com/workspace/chat/limits
-    מחזיר את התוצאה בהצלחה, או מעלה (raise) את השגיאה האחרונה אם כל הניסיונות נכשלו.
-    """
     last_exc = None
     for attempt in range(max_attempts):
         pace_write()
@@ -56,6 +45,15 @@ def call_with_backoff(func, label="", max_attempts=7, base_delay=3, max_wait=60)
             else:
                 break
     raise last_exc
+
+def load_users_dict():
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"שגיאה בטעינת קובץ המשתמשים {USERS_FILE}: {e}")
+    return {}
 
 def authenticate_google_chat():
     token_info = json.loads(os.environ['GCP_TOKEN'])
@@ -158,7 +156,49 @@ def save_state(state, target_space):
     with open(state_file, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def sync_new_messages(service, creds, source_space, target_space):
+def resolve_sender_display(original_msg, source_space, service, known_users, dynamic_known_users):
+    """
+    מאתר את שם המשתמש מתוך קובץ המילון החיצוני או ה-API.
+    אם המזהה לא קיים במילון, מחזיר את המזהה עצמו (ללא 'משתמש לא ידוע').
+    מוסיף תגית לחיצה <users/ID> לפתיחת צ'אט אישי ב-Google Chat.
+    """
+    sender_info = original_msg.get('sender', {})
+    raw_name = sender_info.get('name', '')  # e.g., 'users/113609813722176671168'
+    clean_id = raw_name.replace('users/', '') if raw_name else ''
+
+    # 1. בדיקה במילון החיצוני (תומך גם במזהה נקי וגם בקידומת users/)
+    sender_name = known_users.get(clean_id) or known_users.get(raw_name)
+
+    # 2. בדיקה במילון הדינמי של הריצה הנוכחית
+    if not sender_name and clean_id in dynamic_known_users:
+        sender_name = dynamic_known_users[clean_id]
+
+    # 3. בדיקה בשדות ההודעה הישירים
+    if not sender_name:
+        sender_name = sender_info.get('displayName') or sender_info.get('email')
+
+    # 4. ניסיון שליפה מה-API של המרחב
+    if not sender_name and clean_id:
+        try:
+            member_resource = f"{source_space}/members/{clean_id}"
+            member_info = service.spaces().members().get(name=member_resource).execute()
+            user_data = member_info.get('member', {})
+            sender_name = user_data.get('displayName') or user_data.get('email')
+            if sender_name:
+                dynamic_known_users[clean_id] = sender_name
+        except Exception:
+            pass
+
+    # 5. אם עדיין אין שם במילון או ב-API -> הצגת המזהה עצמו במקום 'משתמש לא ידוע'
+    if not sender_name:
+        sender_name = clean_id if clean_id else (raw_name if raw_name else "ללא_מזהה")
+
+    # יצירת תצוגה לחיצה שפותחת צ'אט אישי ב-Google Chat
+    if clean_id:
+        return f"*{sender_name}* <users/{clean_id}>", sender_name
+    return f"*{sender_name}*", sender_name
+
+def sync_new_messages(service, creds, source_space, target_space, known_users):
     messages = get_all_messages(service, source_space)
     
     if messages is None:
@@ -215,62 +255,9 @@ def sync_new_messages(service, creds, source_space, target_space):
                 thread_id_part = original_thread_id.split('/')[-1]
                 is_parent_message = (msg_id_part == thread_id_part) or (msg_id_part == f"{thread_id_part}.{thread_id_part}")
 
-            sender_info = original_msg.get('sender', {})
-            sender_name = sender_info.get('displayName')
-            if not sender_name:
-                sender_name = sender_info.get('email')
-            
-            if not sender_name:
-                raw_name = sender_info.get('name', '')
-                if raw_name:
-                    known_users = {
-                        "users/107137395716236885442": "פפה",
-                        "users/106503506710148158594": "דני לוי",
-                        "users/107877662890602550681": "אבי רוז",
-                        "users/107234283163890610021": "Yael",
-                        "users/117513968213821700596": "חיים ה. ו.",
-                        "users/100563310580630823467": "בוטית שלי",
-                        "users/108047377691216153736": "TamTam",
-                        "users/114085465098324901258": "מלי",
-                        "users/115105722837621769589": "אורי דווידי",
-                        "users/107569218113942296678": "יוסף פטרובר",
-                        "users/101534845067525560683": "Shai",
-                        "users/101850995062930362213": "family 2025",
-                        "users/117693190766287637519": "ניהול חדש",
-                        "users/117147849218349801765": "אברהם פרידמן",
-                        "users/114525315288128139376": "levkivker",
-                        "users/100961944946973009260": "Netanel",
-                        "users/113248425146167624902": "s.levkivker",
-                        "users/107235267519492805137": "Ben Ziyon g",
-                        "users/110801357268126058232": "שניאור א.",
-                        "users/103092947269637100183": "אלעזר",
-                        "users/115022370288768837848": "שלמה וי",
-                        "users/108727139455424835546": "Haim Furman",
-                        "users/112628871561495302517": "Shloimy Getter",
-                        "users/114022495153014004089": "יצחק כהן",
-                    }
-                    
-                    if raw_name in known_users:
-                        sender_name = known_users[raw_name]
-                    elif raw_name in dynamic_known_users:
-                        sender_name = dynamic_known_users[raw_name]
-                    else:
-                        try:
-                            user_id = raw_name.split('/')[-1]
-                            member_resource = f"{source_space}/members/{user_id}"
-                            member_info = service.spaces().members().get(name=member_resource).execute()
-                            user_data = member_info.get('member', {})
-                            sender_name = user_data.get('displayName')
-                            if not sender_name:
-                                sender_name = user_data.get('email')
-                            if not sender_name:
-                                sender_name = f"מזהה: {user_id}"
-                            
-                            dynamic_known_users[raw_name] = sender_name
-                        except Exception as e:
-                            sender_name = f"מזהה: {raw_name.split('/')[-1]}"
-            else:
-                sender_name = 'משתמש לא ידוע'
+            sender_header, sender_plain_name = resolve_sender_display(
+                original_msg, source_space, service, known_users, dynamic_known_users
+            )
 
             attachments = original_msg.get('attachment', [])
             
@@ -281,7 +268,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                 save_state(state, target_space) 
                 continue
 
-            new_text = f"*{sender_name}:*\n{original_text}" if original_text else f"*{sender_name}:*"
+            new_text = f"{sender_header}:\n{original_text}" if original_text else f"{sender_header}:"
             msg_body = {'text': new_text}
             
             if not is_parent_message:
@@ -311,7 +298,7 @@ def sync_new_messages(service, creds, source_space, target_space):
                 for i, attachment_info in enumerate(attachments):
                     file_stream, mime_type = download_attachment(attachment_info, service, creds)
                     
-                    current_body = msg_body.copy() if i == 0 else {'text': f"*(קובץ נוסף מ-{sender_name})*"}
+                    current_body = msg_body.copy() if i == 0 else {'text': f"*(קובץ נוסף מ-{sender_plain_name})*"}
                     if 'thread' in msg_body:
                         current_body['thread'] = msg_body['thread']
                     msg_res = None
@@ -407,8 +394,11 @@ if __name__ == '__main__':
         ('spaces/AAQAKJsiBR0', 'spaces/AAQA89OFw6A')
     ]
     
+    known_users_dict = load_users_dict()
+    print(f"נטענו {len(known_users_dict)} משתמשים מקובץ המילון החיצוני ({USERS_FILE}).")
+    
     chat_service, creds = authenticate_google_chat()
     
     for source, target in SPACE_PAIRS:
         print(f"--- מתחיל סנכרון: {source} >>> {target} ---")
-        sync_new_messages(chat_service, creds, source, target)
+        sync_new_messages(chat_service, creds, source, target, known_users_dict)
