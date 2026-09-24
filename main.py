@@ -158,12 +158,12 @@ def save_state(state, target_space):
 
 def resolve_sender_display(original_msg, source_space, service, known_users, dynamic_known_users):
     """
-    מאתר את שם המשתמש מתוך קובץ המילון החיצוני או ה-API.
-    אם המזהה לא קיים במילון, מחזיר את המזהה עצמו (ללא 'משתמש לא ידוע').
-    מוסיף תגית לחיצה <users/ID> לפתיחת צ'אט אישי ב-Google Chat.
+    מאתר את שם המשתמש מתוך קובץ המילון החיצוני (users.json) או ה-API.
+    אם קיים מזהה משתמש, מחזיר תגית לחיצה <users/ID> בלבד ללא כפילות.
+    אם המזהה לא קיים במילון, מחזיר את המזהה עצמו במקום 'משתמש לא ידוע'.
     """
     sender_info = original_msg.get('sender', {})
-    raw_name = sender_info.get('name', '')  # e.g., 'users/113609813722176671168'
+    raw_name = sender_info.get('name', '')
     clean_id = raw_name.replace('users/', '') if raw_name else ''
 
     # 1. בדיקה במילון החיצוני (תומך גם במזהה נקי וגם בקידומת users/)
@@ -193,9 +193,9 @@ def resolve_sender_display(original_msg, source_space, service, known_users, dyn
     if not sender_name:
         sender_name = clean_id if clean_id else (raw_name if raw_name else "ללא_מזהה")
 
-    # יצירת תצוגה לחיצה שפותחת צ'אט אישי ב-Google Chat
+    # אפשרות 1: הצגת התיוג הלחיץ בלבד (ללא כפילות של השם לפניו)
     if clean_id:
-        return f"*{sender_name}* <users/{clean_id}>", sender_name
+        return f"<users/{clean_id}>", sender_name
     return f"*{sender_name}*", sender_name
 
 def sync_new_messages(service, creds, source_space, target_space, known_users):
