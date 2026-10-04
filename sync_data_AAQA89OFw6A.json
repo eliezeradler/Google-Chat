@@ -1,5 +1,10 @@
 {
-  "last_msg_id": "spaces/AAQAKJsiBR0/messages/E6oR-HHSGWQ.p8ktlhld2yg",
-  "threads": {},
-  "processed_ids": []
+  "last_msg_id": "spaces/AAQAKJsiBR0/messages/E6oR-HHSGWQ.6XeAdyAbUaI",
+  "threads": {
+    "spaces/AAQAKJsiBR0/threads/326UVbNddyQ": "spaces/AAQA89OFw6A/threads/NQT1HA7MyYk"
+  },
+  "processed_ids": [
+    "spaces/AAQAKJsiBR0/messages/326UVbNddyQ.326UVbNddyQ",
+    "spaces/AAQAKJsiBR0/messages/E6oR-HHSGWQ.6XeAdyAbUaI"
+  ]
 }
