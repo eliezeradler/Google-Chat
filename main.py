@@ -1,5 +1,4 @@
 import os
-מחחךך
 import json
 import io
 import time
