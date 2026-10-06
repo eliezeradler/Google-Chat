@@ -6,7 +6,7 @@ import requests
 import random
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseUpload
 
 SCOPES = [
     'https://www.googleapis.com/auth/chat.messages',
@@ -17,30 +17,38 @@ SCOPES = [
 USERS_FILE = 'users.json'
 
 # --- קיצוב קצב + Retry גלובלי לכל כתיבה ל-Chat API ---
-MIN_WRITE_INTERVAL = 1.2
+MIN_WRITE_INTERVAL = 2.5  # מרווח בטיחות בין פעולות כתיבה (למניעת חריגת 1 req/sec למרחב)
 _last_write_ts = 0.0
 
 def pace_write():
+    """מוודא שעבר מספיק זמן מסיום פעולת הכתיבה הקודמת לפני התחלת הבאה."""
     global _last_write_ts
     now = time.time()
     wait_needed = MIN_WRITE_INTERVAL - (now - _last_write_ts)
     if wait_needed > 0:
         time.sleep(wait_needed)
+
+def mark_write_completed():
+    """רושם את חותמת הזמן שבה הסתיימה פעולת הכתיבה ברשת."""
+    global _last_write_ts
     _last_write_ts = time.time()
 
-def call_with_backoff(func, label="", max_attempts=7, base_delay=3, max_wait=60):
+def call_with_backoff(func, label="", max_attempts=5, base_delay=4, max_wait=60):
     last_exc = None
     for attempt in range(max_attempts):
         pace_write()
         try:
-            return func()
+            res = func()
+            mark_write_completed()
+            return res
         except Exception as e:
+            mark_write_completed()
             last_exc = e
             msg = str(e)
             if ('429' in msg or '503' in msg) and attempt < max_attempts - 1:
-                jitter = random.uniform(0, 1)
+                jitter = random.uniform(0.5, 1.5)
                 wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
-                print(f" > עומס/זמינות בכתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
+                print(f" > עומס כתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
                 time.sleep(wait_time)
             else:
                 break
@@ -166,7 +174,7 @@ def resolve_sender_display(original_msg, source_space, service, known_users, dyn
     raw_name = sender_info.get('name', '')
     clean_id = raw_name.replace('users/', '') if raw_name else ''
 
-    # 1. בדיקה במילון החיצוני (תומך גם במזהה נקי וגם בקידומת users/)
+    # 1. בדיקה במילון החיצוני
     sender_name = known_users.get(clean_id) or known_users.get(raw_name)
 
     # 2. בדיקה במילון הדינמי של הריצה הנוכחית
@@ -189,11 +197,10 @@ def resolve_sender_display(original_msg, source_space, service, known_users, dyn
         except Exception:
             pass
 
-    # 5. אם עדיין אין שם במילון או ב-API -> הצגת המזהה עצמו במקום 'משתמש לא ידוע'
+    # 5. ברירת מחדל: המזהה עצמו
     if not sender_name:
         sender_name = clean_id if clean_id else (raw_name if raw_name else "ללא_מזהה")
 
-    # אפשרות 1: הצגת התיוג הלחיץ בלבד (ללא כפילות של השם לפניו)
     if clean_id:
         return f"<users/{clean_id}>", sender_name
     return f"*{sender_name}*", sender_name
@@ -202,7 +209,7 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
     messages = get_all_messages(service, source_space)
     
     if messages is None:
-        print(f"דילוג על {source_space} בריצה הזו עקב שגיאת תקשורת (ה-API לא הגיב כראוי). ינסה שוב בריצה הבאה.")
+        print(f"דילוג על {source_space} בריצה הזו עקב שגיאת תקשורת. ינסה שוב בריצה הבאה.")
         return
     
     if not messages:
@@ -319,7 +326,8 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
 
                         def _do_upload():
                             file_stream.seek(0)
-                            media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
+                            # העלאה בבקשת Multipart בודדת ללא סשן Resumable מרובה-קריאות
+                            media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=False)
                             return service.media().upload(
                                 parent=target_space,
                                 body={'filename': file_name},
@@ -331,9 +339,7 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                         except Exception as e:
                             last_error_msg = str(e)
                             upload_res = None
-                            if '429' in last_error_msg or '503' in last_error_msg:
-                                print(" > כל 7 הניסיונות נכשלו על רקע מכסה - השהיה נוספת של 20 שניות לפני שממשיכים, כדי לתת למכסה להתאפס.")
-                                time.sleep(20)
+                            print(f" > כשל בהעלאת הקובץ ({file_name}): {last_error_msg}")
 
                         if upload_res:
                             attachment_data_ref = upload_res.get('attachmentDataRef')
@@ -391,6 +397,7 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
 if __name__ == '__main__':
     SPACE_PAIRS = [
         ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q'),
+        ('spaces/AAQAKJsiBR0', 'spaces/AAQA89OFw6A')
     ]
     
     known_users_dict = load_users_dict()
