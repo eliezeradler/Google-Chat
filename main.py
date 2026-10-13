@@ -2,11 +2,17 @@ import os
 import json
 import io
 import time
+import sys
 import requests
 import random
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from googleapiclient.errors import HttpError
+
+# הפעלת שעון העצר של הריצה כדי להסתנכרן עם הטריגר של ה-1 דקה בגיטהאב
+SCRIPT_START_TIME = time.time()
+MAX_EXECUTION_TIME = 45 
 
 SCOPES = [
     'https://www.googleapis.com/auth/chat.messages',
@@ -18,7 +24,6 @@ SCOPES = [
 USERS_FILE = 'users.json'
 DRIVE_BACKUP_FOLDER_ID = '1ya-V66-whXiZS88H1EoD8Q8Lk4-Cb-_r'
 
-# --- קיצוב קצב + Retry גלובלי לכל כתיבה ל-Chat API ---
 MIN_WRITE_INTERVAL = 1.2
 _last_write_ts = 0.0
 
@@ -30,34 +35,46 @@ def pace_write():
         time.sleep(wait_needed)
     _last_write_ts = time.time()
 
-def call_with_backoff(func, label="", max_attempts=7, base_delay=3, max_wait=60):
+def call_with_backoff(func, label="", max_attempts=5, base_delay=2, max_wait=15):
     last_exc = None
     for attempt in range(max_attempts):
         pace_write()
         try:
             return func()
+        except HttpError as e:
+            last_exc = e
+            if e.resp.status in [429, 503]:
+                print(f"\n > [מידע טכני] שגיאת {e.resp.status} מפורטת משרת גוגל בעת '{label}':")
+                try:
+                    print(f"   תוכן השגיאה הגולמי: {e.content.decode(errors='replace')}")
+                except:
+                    pass
+
+            if attempt < max_attempts - 1:
+                jitter = random.uniform(0, 1)
+                wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
+                print(f" > עומס בכתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
+                time.sleep(wait_time)
+            else:
+                break
         except Exception as e:
             last_exc = e
             msg = str(e)
             if ('429' in msg or '503' in msg) and attempt < max_attempts - 1:
                 jitter = random.uniform(0, 1)
                 wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
-                print(f" > עומס/זמינות בכתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
+                print(f" > עומס בכתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
                 time.sleep(wait_time)
             else:
                 break
     raise last_exc
 
 def upload_fallback_to_drive(file_stream, file_name, mime_type, creds):
-    """
-    מעלה את הקובץ לתיקיית Google Drive ייעודית ומחזיר קישור לצפייה ישירה.
-    """
     drive_service = build('drive', 'v3', credentials=creds)
     file_metadata = {
         'name': file_name,
         'parents': [DRIVE_BACKUP_FOLDER_ID]
     }
-    # כאן תוקנה השגיאה: הוספת mimetype
     media = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
     file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
     
@@ -67,7 +84,7 @@ def upload_fallback_to_drive(file_stream, file_name, mime_type, creds):
             body={'type': 'anyone', 'role': 'reader'}
         ).execute()
     except Exception as e:
-        print(f" > הערה: לא ניתן היה להחיל הרשאות פומביות לקובץ בדרייב: {e}")
+        print(f" > הערה: לא ניתן היה להחיל הרשאות פומביות לקובץ הגיבוי בדרייב: {e}")
         
     return file.get('webViewLink')
 
@@ -121,7 +138,7 @@ def download_attachment(attachment, service, creds):
             except Exception as e:
                 time.sleep(5)
             
-    print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף.")
+    print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף ממרחב המקור.")
     return None, None
 
 def get_all_messages(service, space_name):
@@ -135,7 +152,7 @@ def get_all_messages(service, space_name):
                     pageSize=1000,
                     pageToken=page_token
                 ).execute(),
-                label="קריאת הודעות"
+                label="קריאת הודעות ממרחב המקור"
             )
             
             if 'messages' in results:
@@ -247,6 +264,10 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
     dynamic_known_users = {}
 
     for original_msg in new_messages:
+        if time.time() - SCRIPT_START_TIME > MAX_EXECUTION_TIME:
+            print(f"\n⏳ הושג גבול זמן הריצה ({MAX_EXECUTION_TIME} שניות). עוצר באופן מסודר...")
+            sys.exit(0)
+
         try:
             original_msg_id = original_msg.get('name', '')
             original_text = original_msg.get('text', '')
@@ -310,7 +331,8 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                     
                     drive_id = attachment_info.get('driveDataRef', {}).get('driveFileId')
                     if drive_id:
-                        drive_link = f"\n*🔗 מצורף קובץ Drive:* https://drive.google.com/file/d/{drive_id}/view"
+                        # שימוש באימוג'י בלבד לקישור ממרחב המקור
+                        drive_link = f"\n<https://drive.google.com/file/d/{drive_id}/view|⬇️>"
                         current_body['text'] = current_body.get('text', '') + drive_link
                     
                     api_kwargs = {'parent': target_space, 'body': current_body}
@@ -345,31 +367,32 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             try:
                                 msg_res = call_with_backoff(
                                     lambda: service.spaces().messages().create(**api_kwargs).execute(),
-                                    label="יצירת הודעה עם קובץ"
+                                    label="יצירת הודעה עם הקובץ המוצמד"
                                 )
+                                print(f" > קובץ ({file_name}) הועלה בהצלחה למרחב.")
                             except Exception as e:
                                 print(f" > שגיאה בשליחת ההודעה: {e}")
                         else:
                             print(f" > שגיאה בהעלאה ישירה של הקובץ '{file_name}'. מעביר לגיבוי בדרייב...")
                             try:
                                 file_stream.seek(0)
-                                # העברת ה-mime_type לפונקציית הגיבוי
                                 backup_link = upload_fallback_to_drive(file_stream, file_name, mime_type, creds)
-                                current_body['text'] += f"\n*[מערכת: הקובץ ({file_name}) חרג ממכסות העומס ולכן הועלה אוטומטית לדרייב כגיבוי:* {backup_link} *]*"
+                                # שימוש באימוג'י בלבד לקישור הגיבוי בדרייב
+                                current_body['text'] += f"\n<{backup_link}|⬇️>"
                             except Exception as drive_e:
-                                print(f" > שגיאה בגיבוי לדרייב: {drive_e}")
-                                current_body['text'] += f"\n*[מערכת: הקובץ ({file_name}) חסום להעלאה וגיבוי הדרייב נכשל. סיבה: {last_error_msg}]*"
+                                print(f" > שגיאה בגיבוי הקובץ לדרייב: {drive_e}")
+                                current_body['text'] += f"\n*[שגיאה: הקובץ לא עלה וגיבוי נכשל]*"
 
                             try:
                                 msg_res = call_with_backoff(
                                     lambda: service.spaces().messages().create(**api_kwargs).execute(),
-                                    label="יצירת הודעת שגיאה/גיבוי"
+                                    label="יצירת הודעת גיבוי"
                                 )
                             except Exception as e:
-                                print(f" > שגיאה בשליחת הודעת השגיאה: {e}")
+                                print(f" > שגיאה בשליחת הודעת הגיבוי: {e}")
                     else:
                         if not drive_id:
-                            current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להוריד ממרחב המקור]*"
+                            current_body['text'] += "\n*[שגיאה: לא ניתן להוריד קובץ ממרחב המקור]*"
                         try:
                             msg_res = call_with_backoff(
                                 lambda: service.spaces().messages().create(**api_kwargs).execute(),
@@ -393,7 +416,7 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
             save_state(state, target_space)
                     
         except Exception as e:
-            print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
+            print(f"אירעה שגיאה כללית בהעתקת הודעה {original_msg.get('name')}: {e}")
             continue
 
 if __name__ == '__main__':
@@ -408,4 +431,4 @@ if __name__ == '__main__':
     for source, target in SPACE_PAIRS:
         sync_new_messages(chat_service, creds, source, target, known_users_dict)
         
-    print(f"\n✅ הריצה הושלמה בהצלחה.")
+    print(f"\n✅ הריצה הושלמה בהצלחה ללא חריגה מזמן הביצוע.")
