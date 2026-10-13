@@ -81,7 +81,7 @@ def upload_fallback_to_drive(file_stream, file_name, mime_type, creds):
     except Exception as e:
         print(f" > הערה: לא ניתן היה להחיל הרשאות פומביות לקובץ הגיבוי בדרייב: {e}")
         
-    return file.get('id'), file.get('webViewLink')
+    return file.get('webViewLink')
 
 def load_users_dict():
     if os.path.exists(USERS_FILE):
@@ -321,21 +321,16 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                     msg_res = None
                     
                     drive_id = attachment_info.get('driveDataRef', {}).get('driveFileId')
+                    if drive_id:
+                        # הצגת הקישור במלואו לצורך תצוגה מקדימה כטקסט רגיל
+                        drive_link = f"\n🔗 https://drive.google.com/file/d/{drive_id}/view"
+                        current_body['text'] = current_body.get('text', '') + drive_link
                     
                     api_kwargs = {'parent': target_space, 'body': current_body}
                     if 'thread' in current_body:
                         api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                     
-                    if drive_id:
-                        current_body['attachment'] = [{'driveDataRef': {'driveFileId': drive_id}}]
-                        try:
-                            msg_res = call_with_backoff(
-                                lambda: service.spaces().messages().create(**api_kwargs).execute(),
-                                label="יצירת הודעה עם קובץ מדרייב (מקור)"
-                            )
-                        except Exception as e:
-                            print(f" > שגיאה בשליחת הודעת הדרייב: {e}")
-                    elif file_stream:
+                    if file_stream:
                         file_name = attachment_info.get('contentName', 'attachment_file')
                         upload_res = None
                         last_error_msg = "שגיאה לא ידועה"
@@ -372,8 +367,9 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             print(f" > שגיאה בהעלאה ישירה של הקובץ '{file_name}'. מעביר לגיבוי בדרייב...")
                             try:
                                 file_stream.seek(0)
-                                backup_id, backup_link = upload_fallback_to_drive(file_stream, file_name, mime_type, creds)
-                                current_body['attachment'] = [{'driveDataRef': {'driveFileId': backup_id}}]
+                                backup_link = upload_fallback_to_drive(file_stream, file_name, mime_type, creds)
+                                # הוספת הקישור המלא והגלוי לטקסט ההודעה ליצירת תצוגה מקדימה
+                                current_body['text'] += f"\n🔗 {backup_link}"
                             except Exception as drive_e:
                                 print(f" > שגיאה בגיבוי הקובץ לדרייב: {drive_e}")
                                 current_body['text'] += f"\n*[שגיאה: הקובץ לא עלה וגיבוי נכשל]*"
@@ -381,12 +377,13 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             try:
                                 msg_res = call_with_backoff(
                                     lambda: service.spaces().messages().create(**api_kwargs).execute(),
-                                    label="יצירת הודעת גיבוי כקובץ דרייב מוצמד"
+                                    label="יצירת הודעת גיבוי עם הקישור בטקסט"
                                 )
                             except Exception as e:
                                 print(f" > שגיאה בשליחת הודעת הגיבוי: {e}")
                     else:
-                        current_body['text'] += "\n*[שגיאה: לא ניתן להוריד קובץ ממרחב המקור]*"
+                        if not drive_id:
+                            current_body['text'] += "\n*[שגיאה: לא ניתן להוריד קובץ ממרחב המקור]*"
                         try:
                             msg_res = call_with_backoff(
                                 lambda: service.spaces().messages().create(**api_kwargs).execute(),
