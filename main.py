@@ -10,10 +10,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 
-# הפעלת שעון העצר של הריצה כדי להסתנכרן עם הטריגר של ה-1 דקה בגיטהאב
-SCRIPT_START_TIME = time.time()
-MAX_EXECUTION_TIME = 45 
-
 SCOPES = [
     'https://www.googleapis.com/auth/chat.messages',
     'https://www.googleapis.com/auth/chat.spaces.readonly',
