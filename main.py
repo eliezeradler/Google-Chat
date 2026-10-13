@@ -30,7 +30,7 @@ def pace_write():
         time.sleep(wait_needed)
     _last_write_ts = time.time()
 
-def call_with_backoff(func, label="", max_attempts=5, base_delay=2, max_wait=15):
+def call_with_backoff(func, label="", max_attempts=2, base_delay=2, max_wait=15):
     last_exc = None
     for attempt in range(max_attempts):
         pace_write()
@@ -107,7 +107,7 @@ def download_attachment(attachment, service, creds):
     
     if resource_name:
         media_url = f"https://chat.googleapis.com/v1/media/{resource_name}?alt=media"
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = requests.get(media_url, headers=headers, timeout=30)
                 if response.status_code == 200:
@@ -121,7 +121,7 @@ def download_attachment(attachment, service, creds):
                 time.sleep(5)
 
     elif download_uri:
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = requests.get(download_uri, headers=headers, timeout=30)
                 if response.status_code == 200:
@@ -327,7 +327,6 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                         api_kwargs['messageReplyOption'] = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
                     
                     if drive_id:
-                        # הצמדה טבעית כקובץ דרייב (מייצר תצוגה מקדימה ללא טקסט)
                         current_body['attachment'] = [{'driveDataRef': {'driveFileId': drive_id}}]
                         try:
                             msg_res = call_with_backoff(
@@ -351,7 +350,7 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             ).execute()
 
                         try:
-                            upload_res = call_with_backoff(_do_upload, label=f"העלאת קובץ {file_name}", max_attempts=5)
+                            upload_res = call_with_backoff(_do_upload, label=f"העלאת קובץ {file_name}", max_attempts=2)
                         except Exception as e:
                             last_error_msg = str(e)
                             upload_res = None
@@ -374,7 +373,6 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             try:
                                 file_stream.seek(0)
                                 backup_id, backup_link = upload_fallback_to_drive(file_stream, file_name, mime_type, creds)
-                                # הוספת הגיבוי למערך ה-attachment בצורה נקייה - הקישור לא יופיע, רק התצוגה המקדימה של דרייב
                                 current_body['attachment'] = [{'driveDataRef': {'driveFileId': backup_id}}]
                             except Exception as drive_e:
                                 print(f" > שגיאה בגיבוי הקובץ לדרייב: {drive_e}")
