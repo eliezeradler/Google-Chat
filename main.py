@@ -8,7 +8,6 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-# הוספת הרשאת Drive למערך הגישות (Scopes)
 SCOPES = [
     'https://www.googleapis.com/auth/chat.messages',
     'https://www.googleapis.com/auth/chat.spaces.readonly',
@@ -49,7 +48,7 @@ def call_with_backoff(func, label="", max_attempts=7, base_delay=3, max_wait=60)
                 break
     raise last_exc
 
-def upload_fallback_to_drive(file_stream, file_name, creds):
+def upload_fallback_to_drive(file_stream, file_name, mime_type, creds):
     """
     מעלה את הקובץ לתיקיית Google Drive ייעודית ומחזיר קישור לצפייה ישירה.
     """
@@ -58,7 +57,8 @@ def upload_fallback_to_drive(file_stream, file_name, creds):
         'name': file_name,
         'parents': [DRIVE_BACKUP_FOLDER_ID]
     }
-    media = MediaIoBaseUpload(file_stream, resumable=True)
+    # כאן תוקנה השגיאה: הוספת mimetype
+    media = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
     file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
     
     try:
@@ -350,11 +350,11 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             except Exception as e:
                                 print(f" > שגיאה בשליחת ההודעה: {e}")
                         else:
-                            # מנגנון הגיבוי החדש לדרייב עקב שגיאת המכסה
                             print(f" > שגיאה בהעלאה ישירה של הקובץ '{file_name}'. מעביר לגיבוי בדרייב...")
                             try:
                                 file_stream.seek(0)
-                                backup_link = upload_fallback_to_drive(file_stream, file_name, creds)
+                                # העברת ה-mime_type לפונקציית הגיבוי
+                                backup_link = upload_fallback_to_drive(file_stream, file_name, mime_type, creds)
                                 current_body['text'] += f"\n*[מערכת: הקובץ ({file_name}) חרג ממכסות העומס ולכן הועלה אוטומטית לדרייב כגיבוי:* {backup_link} *]*"
                             except Exception as drive_e:
                                 print(f" > שגיאה בגיבוי לדרייב: {drive_e}")
