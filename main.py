@@ -6,53 +6,70 @@ import requests
 import random
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
+# הוספת הרשאת Drive למערך הגישות (Scopes)
 SCOPES = [
     'https://www.googleapis.com/auth/chat.messages',
     'https://www.googleapis.com/auth/chat.spaces.readonly',
-    'https://www.googleapis.com/auth/chat.memberships.readonly'
+    'https://www.googleapis.com/auth/chat.memberships.readonly',
+    'https://www.googleapis.com/auth/drive'
 ]
 
 USERS_FILE = 'users.json'
+DRIVE_BACKUP_FOLDER_ID = '1ya-V66-whXiZS88H1EoD8Q8Lk4-Cb-_r'
 
 # --- קיצוב קצב + Retry גלובלי לכל כתיבה ל-Chat API ---
-MIN_WRITE_INTERVAL = 2.5  # מרווח בטיחות בין פעולות כתיבה (למניעת חריגת 1 req/sec למרחב)
+MIN_WRITE_INTERVAL = 1.2
 _last_write_ts = 0.0
 
 def pace_write():
-    """מוודא שעבר מספיק זמן מסיום פעולת הכתיבה הקודמת לפני התחלת הבאה."""
     global _last_write_ts
     now = time.time()
     wait_needed = MIN_WRITE_INTERVAL - (now - _last_write_ts)
     if wait_needed > 0:
         time.sleep(wait_needed)
-
-def mark_write_completed():
-    """רושם את חותמת הזמן שבה הסתיימה פעולת הכתיבה ברשת."""
-    global _last_write_ts
     _last_write_ts = time.time()
 
-def call_with_backoff(func, label="", max_attempts=5, base_delay=4, max_wait=60):
+def call_with_backoff(func, label="", max_attempts=7, base_delay=3, max_wait=60):
     last_exc = None
     for attempt in range(max_attempts):
         pace_write()
         try:
-            res = func()
-            mark_write_completed()
-            return res
+            return func()
         except Exception as e:
-            mark_write_completed()
             last_exc = e
             msg = str(e)
             if ('429' in msg or '503' in msg) and attempt < max_attempts - 1:
-                jitter = random.uniform(0.5, 1.5)
+                jitter = random.uniform(0, 1)
                 wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
-                print(f" > עומס כתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
+                print(f" > עומס/זמינות בכתיבה ({label}). ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
                 time.sleep(wait_time)
             else:
                 break
     raise last_exc
+
+def upload_fallback_to_drive(file_stream, file_name, creds):
+    """
+    מעלה את הקובץ לתיקיית Google Drive ייעודית ומחזיר קישור לצפייה ישירה.
+    """
+    drive_service = build('drive', 'v3', credentials=creds)
+    file_metadata = {
+        'name': file_name,
+        'parents': [DRIVE_BACKUP_FOLDER_ID]
+    }
+    media = MediaIoBaseUpload(file_stream, resumable=True)
+    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+    
+    try:
+        drive_service.permissions().create(
+            fileId=file.get('id'),
+            body={'type': 'anyone', 'role': 'reader'}
+        ).execute()
+    except Exception as e:
+        print(f" > הערה: לא ניתן היה להחיל הרשאות פומביות לקובץ בדרייב: {e}")
+        
+    return file.get('webViewLink')
 
 def load_users_dict():
     if os.path.exists(USERS_FILE):
@@ -85,12 +102,10 @@ def download_attachment(attachment, service, creds):
                     print(f" > מדיה ירדה בהצלחה דרך API ישיר ({resource_name})")
                     return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
                 elif response.status_code == 429:
-                    print(f" > עומס קריאה (429) בהורדה. ממתין 10 שניות...")
                     time.sleep(10)
                 else:
                     break
             except Exception as e:
-                print(f" > שגיאת תקשורת בהורדה: {e}")
                 time.sleep(5)
 
     elif download_uri:
@@ -100,12 +115,10 @@ def download_attachment(attachment, service, creds):
                 if response.status_code == 200:
                     return io.BytesIO(response.content), attachment.get('contentType', 'application/octet-stream')
                 elif response.status_code == 429:
-                    print(f" > עומס קריאה (429) מקישור. ממתין 10 שניות...")
                     time.sleep(10)
                 else:
                     break
             except Exception as e:
-                print(f" > שגיאת תקשורת מקישור: {e}")
                 time.sleep(5)
             
     print(" > שגיאה: לא ניתן היה להוריד את הקובץ המצורף.")
@@ -165,27 +178,18 @@ def save_state(state, target_space):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 def resolve_sender_display(original_msg, source_space, service, known_users, dynamic_known_users):
-    """
-    מאתר את שם המשתמש מתוך קובץ המילון החיצוני (users.json) או ה-API.
-    אם קיים מזהה משתמש, מחזיר תגית לחיצה <users/ID> בלבד ללא כפילות.
-    אם המזהה לא קיים במילון, מחזיר את המזהה עצמו במקום 'משתמש לא ידוע'.
-    """
     sender_info = original_msg.get('sender', {})
     raw_name = sender_info.get('name', '')
     clean_id = raw_name.replace('users/', '') if raw_name else ''
 
-    # 1. בדיקה במילון החיצוני
     sender_name = known_users.get(clean_id) or known_users.get(raw_name)
 
-    # 2. בדיקה במילון הדינמי של הריצה הנוכחית
     if not sender_name and clean_id in dynamic_known_users:
         sender_name = dynamic_known_users[clean_id]
 
-    # 3. בדיקה בשדות ההודעה הישירים
     if not sender_name:
         sender_name = sender_info.get('displayName') or sender_info.get('email')
 
-    # 4. ניסיון שליפה מה-API של המרחב
     if not sender_name and clean_id:
         try:
             member_resource = f"{source_space}/members/{clean_id}"
@@ -197,7 +201,6 @@ def resolve_sender_display(original_msg, source_space, service, known_users, dyn
         except Exception:
             pass
 
-    # 5. ברירת מחדל: המזהה עצמו
     if not sender_name:
         sender_name = clean_id if clean_id else (raw_name if raw_name else "ללא_מזהה")
 
@@ -209,11 +212,10 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
     messages = get_all_messages(service, source_space)
     
     if messages is None:
-        print(f"דילוג על {source_space} בריצה הזו עקב שגיאת תקשורת. ינסה שוב בריצה הבאה.")
+        print(f"דילוג על {source_space} בריצה הזו עקב שגיאת תקשורת.")
         return
     
     if not messages:
-        print(f"לא נמצאו הודעות במרחב המקור {source_space}.")
         return
 
     state = load_state(target_space)
@@ -238,7 +240,6 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
         new_messages = messages[-50:] 
 
     if not new_messages:
-        print("אין הודעות חדשות להעתקה הפעם.")
         return
 
     print(f"נמצאו {len(new_messages)} הודעות חדשות. מתחיל העתקה...")
@@ -251,7 +252,6 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
             original_text = original_msg.get('text', '')
             
             if original_msg_id in state.get('processed_ids', []):
-                print(f"דילוג: הודעה {original_msg_id} כבר הועתקה בעבר.")
                 continue
 
             original_thread_id = original_msg.get('thread', {}).get('name', '')
@@ -282,7 +282,6 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                 if original_thread_id in state['threads']:
                     msg_body['thread'] = {'name': state['threads'][original_thread_id]}
                 else:
-                    print(f"דילוג: ההודעה {original_msg_id} היא תגובה לשרשור לא מוכר.")
                     state["last_msg_id"] = original_msg_id
                     if original_msg_id not in state['processed_ids']:
                         state['processed_ids'].append(original_msg_id)
@@ -300,7 +299,6 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                     lambda: service.spaces().messages().create(**api_kwargs).execute(),
                     label="יצירת הודעת טקסט"
                 )
-                print(" > הודעת טקסט הועתקה בהצלחה.")
             else:
                 for i, attachment_info in enumerate(attachments):
                     file_stream, mime_type = download_attachment(attachment_info, service, creds)
@@ -326,8 +324,7 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
 
                         def _do_upload():
                             file_stream.seek(0)
-                            # העלאה בבקשת Multipart בודדת ללא סשן Resumable מרובה-קריאות
-                            media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=False)
+                            media_upload = MediaIoBaseUpload(file_stream, mimetype=mime_type, resumable=True)
                             return service.media().upload(
                                 parent=target_space,
                                 body={'filename': file_name},
@@ -335,11 +332,10 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             ).execute()
 
                         try:
-                            upload_res = call_with_backoff(_do_upload, label=f"העלאת קובץ {file_name}")
+                            upload_res = call_with_backoff(_do_upload, label=f"העלאת קובץ {file_name}", max_attempts=5)
                         except Exception as e:
                             last_error_msg = str(e)
                             upload_res = None
-                            print(f" > כשל בהעלאת הקובץ ({file_name}): {last_error_msg}")
 
                         if upload_res:
                             attachment_data_ref = upload_res.get('attachmentDataRef')
@@ -351,18 +347,26 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                                     lambda: service.spaces().messages().create(**api_kwargs).execute(),
                                     label="יצירת הודעה עם קובץ"
                                 )
-                                print(f" > קובץ ({file_name}) טופל בהצלחה.")
                             except Exception as e:
-                                print(f" > שגיאה בשליחת ההודעה (לאחר כל הניסיונות): {e}")
+                                print(f" > שגיאה בשליחת ההודעה: {e}")
                         else:
-                            current_body['text'] += f"\n*[מערכת: קובץ ({file_name}) לא צורף. סיבה: {last_error_msg}]*"
+                            # מנגנון הגיבוי החדש לדרייב עקב שגיאת המכסה
+                            print(f" > שגיאה בהעלאה ישירה של הקובץ '{file_name}'. מעביר לגיבוי בדרייב...")
+                            try:
+                                file_stream.seek(0)
+                                backup_link = upload_fallback_to_drive(file_stream, file_name, creds)
+                                current_body['text'] += f"\n*[מערכת: הקובץ ({file_name}) חרג ממכסות העומס ולכן הועלה אוטומטית לדרייב כגיבוי:* {backup_link} *]*"
+                            except Exception as drive_e:
+                                print(f" > שגיאה בגיבוי לדרייב: {drive_e}")
+                                current_body['text'] += f"\n*[מערכת: הקובץ ({file_name}) חסום להעלאה וגיבוי הדרייב נכשל. סיבה: {last_error_msg}]*"
+
                             try:
                                 msg_res = call_with_backoff(
                                     lambda: service.spaces().messages().create(**api_kwargs).execute(),
-                                    label="יצירת הודעת שגיאה"
+                                    label="יצירת הודעת שגיאה/גיבוי"
                                 )
                             except Exception as e:
-                                print(f" > שגיאה בשליחת הודעת השגיאה (לאחר כל הניסיונות): {e}")
+                                print(f" > שגיאה בשליחת הודעת השגיאה: {e}")
                     else:
                         if not drive_id:
                             current_body['text'] += "\n*[מערכת: צורף קובץ או תמונה שלא ניתן היה להוריד ממרחב המקור]*"
@@ -372,7 +376,7 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                                 label="יצירת הודעת שגיאת הורדה"
                             )
                         except Exception as e:
-                            print(f" > שגיאה בשליחת הודעת שגיאת הורדה (לאחר כל הניסיונות): {e}")
+                            pass
                         
                     if i == 0:
                         created_message = msg_res
@@ -392,18 +396,16 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
             print(f"אירעה שגיאה בהעתקת הודעה {original_msg.get('name')}: {e}")
             continue
 
-    print(f"הסנכרון מ-{source_space} הסתיים בהצלחה.\n")
-
 if __name__ == '__main__':
     SPACE_PAIRS = [
         ('spaces/AAQArWIpnWI', 'spaces/AAQAq5S0W9Q'),
+        ('spaces/AAQAKJsiBR0', 'spaces/AAQA89OFw6A')
     ]
     
     known_users_dict = load_users_dict()
-    print(f"נטענו {len(known_users_dict)} משתמשים מקובץ המילון החיצוני ({USERS_FILE}).")
-    
     chat_service, creds = authenticate_google_chat()
     
     for source, target in SPACE_PAIRS:
-        print(f"--- מתחיל סנכרון: {source} >>> {target} ---")
         sync_new_messages(chat_service, creds, source, target, known_users_dict)
+        
+    print(f"\n✅ הריצה הושלמה בהצלחה.")
