@@ -2,7 +2,6 @@ import os
 import json
 import io
 import time
-import sys
 import requests
 import random
 from google.oauth2.credentials import Credentials
@@ -260,10 +259,6 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
     dynamic_known_users = {}
 
     for original_msg in new_messages:
-        if time.time() - SCRIPT_START_TIME > MAX_EXECUTION_TIME:
-            print(f"\n⏳ הושג גבול זמן הריצה ({MAX_EXECUTION_TIME} שניות). עוצר באופן מסודר...")
-            sys.exit(0)
-
         try:
             original_msg_id = original_msg.get('name', '')
             original_text = original_msg.get('text', '')
@@ -427,4 +422,4 @@ if __name__ == '__main__':
     for source, target in SPACE_PAIRS:
         sync_new_messages(chat_service, creds, source, target, known_users_dict)
         
-    print(f"\n✅ הריצה הושלמה בהצלחה ללא חריגה מזמן הביצוע.")
+    print(f"\n✅ הריצה הושלמה בהצלחה.")
