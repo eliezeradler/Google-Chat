@@ -322,8 +322,8 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                     
                     drive_id = attachment_info.get('driveDataRef', {}).get('driveFileId')
                     if drive_id:
-                        # שימוש באימוג'י בלבד לקישור ממרחב המקור
-                        drive_link = f"\n<https://drive.google.com/file/d/{drive_id}/view|⬇️>"
+                        # הצגת הקישור במלואו לצורך תצוגה מקדימה
+                        drive_link = f"\n🔗 https://drive.google.com/file/d/{drive_id}/view"
                         current_body['text'] = current_body.get('text', '') + drive_link
                     
                     api_kwargs = {'parent': target_space, 'body': current_body}
@@ -368,8 +368,8 @@ def sync_new_messages(service, creds, source_space, target_space, known_users):
                             try:
                                 file_stream.seek(0)
                                 backup_link = upload_fallback_to_drive(file_stream, file_name, mime_type, creds)
-                                # שימוש באימוג'י בלבד לקישור הגיבוי בדרייב
-                                current_body['text'] += f"\n<{backup_link}|⬇️>"
+                                # הצגת הקישור במלואו לצורך תצוגה מקדימה
+                                current_body['text'] += f"\n🔗 {backup_link}"
                             except Exception as drive_e:
                                 print(f" > שגיאה בגיבוי הקובץ לדרייב: {drive_e}")
                                 current_body['text'] += f"\n*[שגיאה: הקובץ לא עלה וגיבוי נכשל]*"
